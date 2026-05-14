@@ -368,9 +368,44 @@ class GeminiModel:
     than Outlines' wrapper for structured output generation.
     """
 
-    def __init__(self, client: genai.Client, model_name: str):
+    def __init__(
+        self,
+        client: genai.Client,
+        model_name: str,
+        safety_settings: list[dict] | None = None,
+    ):
         self.client = client
         self.model_name = model_name
+        self._safety_settings = self._build_safety_settings(safety_settings)
+
+    def _build_safety_settings(
+        self, settings: list[dict] | None
+    ) -> list[genai_types.SafetySetting] | None:
+        if not settings:
+            return None
+        result = []
+        for s in settings:
+            category_name = self._CATEGORY_ALIASES.get(
+                self._yaml_str(s["category"]), self._yaml_str(s["category"])
+            )
+            category = getattr(genai_types.HarmCategory, category_name)
+            threshold = getattr(genai_types.HarmBlockThreshold, self._yaml_str(s["threshold"]))
+            result.append(genai_types.SafetySetting(category=category, threshold=threshold))
+        return result
+
+    # Aliases for category names that were renamed in the Gemini API
+    _CATEGORY_ALIASES: dict[str, str] = {
+        "HARM_CATEGORY_DANGEROUS": "HARM_CATEGORY_DANGEROUS_CONTENT",
+    }
+
+    @staticmethod
+    def _yaml_str(value: object) -> str:
+        # PyYAML 1.1 parses bare OFF/ON as bool. Map them back to their string names.
+        if value is False:
+            return "OFF"
+        if value is True:
+            return "ON"
+        return str(value)
 
     def _prepare_json_schema(self, schema: type[BaseModel]) -> dict:
         """Prepare JSON schema for Gemini by stripping incompatible fields.
@@ -401,12 +436,16 @@ class GeminiModel:
         # Use prepared schema with Gemini-compatible transformations
         prepared_schema = self._prepare_json_schema(schema)
 
+        config_kwargs: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "response_json_schema": prepared_schema,
+            **kwargs,
+        }
+        if self._safety_settings:
+            config_kwargs["safety_settings"] = self._safety_settings
+
         try:
-            config = genai_types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_json_schema=prepared_schema,
-                **kwargs,
-            )
+            config = genai_types.GenerateContentConfig(**config_kwargs)
         except Exception as e:
             raise DataSetGeneratorError(f"Failed to create Gemini config: {e}") from e
 
@@ -1150,9 +1189,10 @@ def make_outlines_model(provider: str, model_name: str, **kwargs) -> Any:
 
         if provider == "gemini":
             api_key = _get_gemini_api_key()
+            safety_settings = kwargs.pop("gemini_safety_settings", None)
             # Use direct Gemini API instead of Outlines for better structured output reliability
             client = genai.Client(api_key=api_key)
-            return GeminiModel(client, model_name)
+            return GeminiModel(client, model_name, safety_settings=safety_settings)
 
         _raise_unsupported_provider_error(provider)
 
@@ -1206,9 +1246,10 @@ def make_async_outlines_model(provider: str, model_name: str, **kwargs) -> Any |
 
         if provider == "gemini":
             api_key = _get_gemini_api_key()
+            safety_settings = kwargs.pop("gemini_safety_settings", None)
             # Use direct async Gemini API for better structured output reliability
             client = genai.Client(api_key=api_key)
-            return GeminiModel(client, model_name)
+            return GeminiModel(client, model_name, safety_settings=safety_settings)
 
     except DataSetGeneratorError:
         raise

@@ -78,6 +78,15 @@ class LLMConfig(BaseModel):
         default=None,
         description="Base URL for API endpoint (e.g., custom OpenAI-compatible servers)",
     )
+    gemini_safety_settings: list[dict] | None = Field(
+        default=None,
+        description=(
+            "Safety settings for Gemini models. "
+            "List of dicts with 'category' and 'threshold' keys. "
+            "Example: [{category: HARM_CATEGORY_HATE_SPEECH, threshold: OFF}]. "
+            "Valid thresholds: OFF, BLOCK_NONE, BLOCK_ONLY_HIGH, BLOCK_MEDIUM_AND_ABOVE, BLOCK_LOW_AND_ABOVE."
+        ),
+    )
 
 
 class TopicsConfig(BaseModel):
@@ -558,12 +567,14 @@ See documentation for full examples.
         section_model = section_llm.model if section_llm else None
         section_temperature = section_llm.temperature if section_llm else None
         section_base_url = section_llm.base_url if section_llm else None
+        section_safety = section_llm.gemini_safety_settings if section_llm else None
 
         # Get values from top-level shared config (if any)
         shared_provider = self.llm.provider if self.llm else None
         shared_model = self.llm.model if self.llm else None
         shared_temperature = self.llm.temperature if self.llm else None
         shared_base_url = self.llm.base_url if self.llm else None
+        shared_safety = self.llm.gemini_safety_settings if self.llm else None
 
         # Resolve with priority: section > shared > defaults
         return LLMConfig(
@@ -579,6 +590,7 @@ See documentation for full examples.
                 )
             ),
             base_url=section_base_url or shared_base_url,
+            gemini_safety_settings=section_safety or shared_safety,
         )
 
     def get_topics_params(self, **overrides) -> dict:
@@ -598,6 +610,9 @@ See documentation for full examples.
             "max_tokens": self.topics.max_tokens,
             "prompt_style": self.topics.prompt_style,
         }
+
+        if llm.gemini_safety_settings:
+            params["gemini_safety_settings"] = llm.gemini_safety_settings
 
         # Handle overrides
         override_provider = overrides.pop("provider", None)
@@ -643,6 +658,9 @@ See documentation for full examples.
             if self.output.checkpoint
             else False,
         }
+
+        if llm.gemini_safety_settings:
+            params["gemini_safety_settings"] = llm.gemini_safety_settings
 
         # Tool config
         if self.generation.tools:

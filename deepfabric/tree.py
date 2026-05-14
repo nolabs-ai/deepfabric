@@ -94,6 +94,10 @@ class TreeConfig(BaseModel):
         ge=1,
         description="Maximum tokens for topic generation LLM calls",
     )
+    gemini_safety_settings: list[dict] | None = Field(
+        default=None,
+        description="Safety settings for Gemini models",
+    )
 
 
 class TreeValidator:
@@ -166,6 +170,8 @@ class Tree(TopicModel):
         llm_kwargs = {}
         if self.config.base_url:
             llm_kwargs["base_url"] = self.config.base_url
+        if self.config.gemini_safety_settings:
+            llm_kwargs["gemini_safety_settings"] = self.config.gemini_safety_settings
 
         self.llm_client = LLMClient(
             provider=self.provider,

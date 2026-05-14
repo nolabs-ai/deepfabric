@@ -79,6 +79,10 @@ class GraphConfig(BaseModel):
         default=None,
         description="Base URL for API endpoint (e.g., custom OpenAI-compatible servers)",
     )
+    gemini_safety_settings: list[dict] | None = Field(
+        default=None,
+        description="Safety settings for Gemini models",
+    )
     prompt_style: Literal["default", "isolated", "anchored"] = Field(
         default="default",
         description="Prompt style: 'default' (cross-connections, generic), 'isolated' (no connections, generic), 'anchored' (no connections, domain-aware)",
@@ -168,6 +172,8 @@ class Graph(TopicModel):
         llm_kwargs = {}
         if self.config.base_url:
             llm_kwargs["base_url"] = self.config.base_url
+        if self.config.gemini_safety_settings:
+            llm_kwargs["gemini_safety_settings"] = self.config.gemini_safety_settings
 
         self.llm_client = LLMClient(
             provider=self.provider,

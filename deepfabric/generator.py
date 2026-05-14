@@ -131,6 +131,10 @@ class DataSetGeneratorConfig(BaseModel):
         default=None,
         description="Rate limiting and retry configuration (uses provider defaults if not specified)",
     )
+    gemini_safety_settings: list[dict] | None = Field(
+        default=None,
+        description="Safety settings for Gemini models",
+    )
 
     # Modular conversation configuration
     conversation_type: Literal["basic", "cot"] = Field(
@@ -243,6 +247,8 @@ class DataSetGenerator:
         llm_kwargs: dict[str, Any] = {"rate_limit_config": self.config.rate_limit}
         if self.config.base_url:
             llm_kwargs["base_url"] = self.config.base_url
+        if self.config.gemini_safety_settings:
+            llm_kwargs["gemini_safety_settings"] = self.config.gemini_safety_settings
 
         self.llm_client = LLMClient(
             provider=self.provider,

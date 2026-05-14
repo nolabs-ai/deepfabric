@@ -10,6 +10,7 @@ llm:
   provider: "openai"
   model: "gpt-4o"
   temperature: 0.7
+  # gemini_safety_settings: [...]  # Gemini only — see Section Reference below
 
 # Topic generation
 topics:
@@ -79,6 +80,74 @@ Shared LLM defaults inherited by `topics` and `generation`.
 | `model` | string | Model name |
 | `temperature` | float | Sampling temperature (0.0-2.0) |
 | `base_url` | string | Custom API endpoint |
+| `gemini_safety_settings` | list | Safety filter overrides for Gemini models (see below) |
+
+#### Gemini Safety Settings
+
+Gemini models apply content safety filters by default. For synthetic dataset generation — especially adversarial, security, or red-teaming datasets — these filters can block legitimate content. Use `gemini_safety_settings` to control the threshold for each category.
+
+Each entry in the list requires two fields:
+
+| Field | Values |
+|-------|--------|
+| `category` | `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_DANGEROUS_CONTENT`, `HARM_CATEGORY_CIVIC_INTEGRITY` |
+| `threshold` | `OFF`, `BLOCK_NONE`, `BLOCK_ONLY_HIGH`, `BLOCK_MEDIUM_AND_ABOVE`, `BLOCK_LOW_AND_ABOVE` |
+
+!!! info "Default behaviour"
+    Gemini 2.5 and later models default to `OFF` for all categories. For earlier models the default is `BLOCK_MEDIUM_AND_ABOVE`. Setting `OFF` disables the filter entirely; `BLOCK_NONE` allows all content regardless of the model's safety probability score.
+
+!!! warning "YAML quoting"
+    YAML 1.1 (used by PyYAML) parses bare `OFF` and `ON` as booleans. DeepFabric handles this automatically, but if you prefer to be explicit you can quote the value: `threshold: "OFF"`.
+
+```yaml title="Disable all safety filters"
+llm:
+  provider: gemini
+  model: gemini-2.0-flash
+  gemini_safety_settings:
+    - category: HARM_CATEGORY_HATE_SPEECH
+      threshold: OFF
+    - category: HARM_CATEGORY_HARASSMENT
+      threshold: OFF
+    - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+      threshold: OFF
+    - category: HARM_CATEGORY_DANGEROUS_CONTENT
+      threshold: OFF
+    - category: HARM_CATEGORY_CIVIC_INTEGRITY
+      threshold: OFF
+```
+
+```yaml title="Relax only the dangerous-content filter"
+llm:
+  provider: gemini
+  model: gemini-2.0-flash
+  gemini_safety_settings:
+    - category: HARM_CATEGORY_DANGEROUS_CONTENT
+      threshold: BLOCK_ONLY_HIGH
+```
+
+Safety settings can be placed on the top-level `llm` block (applies to both topics and generation) or on a section-specific `llm` block to target only that stage:
+
+```yaml title="Per-section safety settings"
+llm:
+  provider: gemini
+  model: gemini-2.0-flash
+
+topics:
+  prompt: "Adversarial AI attack scenarios"
+  llm:
+    gemini_safety_settings:
+      - category: HARM_CATEGORY_DANGEROUS_CONTENT
+        threshold: OFF
+
+generation:
+  system_prompt: "Generate adversarial test cases."
+  llm:
+    gemini_safety_settings:
+      - category: HARM_CATEGORY_DANGEROUS_CONTENT
+        threshold: OFF
+      - category: HARM_CATEGORY_HARASSMENT
+        threshold: OFF
+```
 
 ### topics
 
