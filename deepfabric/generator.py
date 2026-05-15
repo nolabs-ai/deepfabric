@@ -39,6 +39,7 @@ from .progress import ProgressReporter
 from .prompts import (
     AGENT_COT_TOOLS_PROMPT,
     CONVERSATION_GENERATION_PROMPT,
+    CUSTOM_SCHEMA_PROMPT,
     FREETEXT_COT_PROMPT,
     STRUCTURED_COT_PROMPT,
     AgentPromptBuilder,
@@ -130,6 +131,23 @@ class DataSetGeneratorConfig(BaseModel):
     rate_limit: dict[str, int | float | str | bool] | None = Field(
         default=None,
         description="Rate limiting and retry configuration (uses provider defaults if not specified)",
+    )
+
+    # Custom structured output schema
+    output_schema: dict | None = Field(
+        default=None,
+        description=(
+            "JSON Schema for custom structured output. When set, bypasses the conversation "
+            "format and generates directly into this schema via constrained decoding. "
+            "Records in the JSONL output will match the schema instead of the OpenAI messages format."
+        ),
+    )
+    output_format: Literal["messages", "custom"] = Field(
+        default="messages",
+        description=(
+            "'messages' (default): OpenAI chat format. "
+            "'custom': emit records matching output_schema directly."
+        ),
     )
 
     # Modular conversation configuration
@@ -955,6 +973,17 @@ class DataSetGenerator:
         """Get the conversation schema for the current config."""
         return get_conversation_schema(self.config.conversation_type)
 
+    def _get_custom_schema_model(self) -> type:
+        """Build a dynamic model class from the configured output_schema."""
+        from .llm.client import make_dynamic_model
+        return make_dynamic_model(self.config.output_schema)
+
+    def _get_prompt_template(self) -> str:
+        """Return the prompt template, using CUSTOM_SCHEMA_PROMPT when output_schema is set."""
+        if self.config.output_schema:
+            return CUSTOM_SCHEMA_PROMPT
+        return self._get_cot_prompt_template()
+
     def _emit_retry(
         self,
         sample_idx: int,
@@ -1014,6 +1043,30 @@ class DataSetGenerator:
             Each parallel task gets its own builder instance to avoid Spin session
             conflicts when running samples concurrently (batch_size > 1).
             """
+            last_error: Exception | None = None
+            max_attempts = self.config.sample_retries + 1
+
+            # Custom schema mode: bypass conversation builder entirely and
+            # generate directly into the user-defined schema via constrained decoding.
+            if config.output_schema:
+                schema_model = self._get_custom_schema_model()
+                for attempt in range(max_attempts):
+                    try:
+                        result = await self.llm_client.generate_async(
+                            prompt,
+                            schema_model,
+                            max_tokens=config.max_tokens,
+                        )
+                        return True, result
+                    except Exception as e:  # noqa: BLE001
+                        last_error = e
+                        if is_validation_error(e) and attempt < self.config.sample_retries:
+                            self._emit_retry(sample_idx, attempt, max_attempts, e)
+                            continue
+                        return False, last_error
+                return False, last_error or Exception("Custom schema generation failed")
+
+            # Normal conversation builder mode
             # Create a fresh builder for this sample to avoid session conflicts
             # when running in parallel batches
             builder = ConversationBuilderFactory.create(
@@ -1023,9 +1076,7 @@ class DataSetGenerator:
                 progress_reporter=self.progress_reporter,
             )
 
-            last_error: Exception | None = None
             error_feedback: str | None = None
-            max_attempts = self.config.sample_retries + 1
             logger.debug(
                 "Sample %d: max_attempts=%d (sample_retries=%d)",
                 sample_idx + 1,
@@ -1295,7 +1346,7 @@ class DataSetGenerator:
 
         # Calculate total samples requested
         total_samples = num_steps * batch_size
-        data_creation_prompt = self._get_cot_prompt_template()
+        data_creation_prompt = self._get_prompt_template()
 
         # Ensure checkpoint_interval is at least as large as concurrency/batch_size
         # so checkpoints align with batch boundaries
@@ -1388,7 +1439,7 @@ class DataSetGenerator:
 
         # Calculate total samples requested
         total_samples = num_steps * batch_size
-        data_creation_prompt = self._get_cot_prompt_template()
+        data_creation_prompt = self._get_prompt_template()
 
         # Ensure checkpoint_interval is at least as large as concurrency/batch_size
         # so checkpoints align with batch boundaries

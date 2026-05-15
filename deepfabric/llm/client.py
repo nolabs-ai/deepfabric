@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -1218,3 +1219,40 @@ def make_async_outlines_model(provider: str, model_name: str, **kwargs) -> Any |
     # Outlines does not currently expose async structured generation wrappers
     # for the remaining providers. Fallback to synchronous execution later.
     return None
+
+
+def make_dynamic_model(schema_dict: dict) -> type:
+    """Create a schema-compatible model class from a raw JSON schema dict.
+
+    The returned class satisfies the interface expected by LLMClient.generate_async:
+    - model_json_schema() — returns the schema dict (used by provider clients)
+    - model_validate_json(json_str) — parses JSON and returns an instance
+    - instance.model_dump() — returns the parsed dict
+
+    This lets user-defined JSON schemas flow through the existing structured-output
+    pipeline without requiring a hand-written Pydantic model.
+    """
+    _schema = dict(schema_dict)
+
+    class DynamicModel:
+        def __init__(self, data: dict) -> None:
+            self._data = data
+
+        @classmethod
+        def model_json_schema(cls, **_kwargs: Any) -> dict:
+            return _schema
+
+        @classmethod
+        def model_validate_json(cls, json_data: str) -> "DynamicModel":
+            try:
+                data = json.loads(json_data)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON from model: {exc}") from exc
+            return cls(data)
+
+        def model_dump(self, exclude_none: bool = False, **_kwargs: Any) -> dict:
+            if exclude_none:
+                return {k: v for k, v in self._data.items() if v is not None}
+            return dict(self._data)
+
+    return DynamicModel

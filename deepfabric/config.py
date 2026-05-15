@@ -263,6 +263,15 @@ class GenerationConfig(BaseModel):
     )
     save_as: str | None = Field(default=None, description="Where to save the generated samples")
 
+    # Custom structured output schema (bypasses conversation format)
+    output_schema: dict | None = Field(
+        default=None,
+        description=(
+            "JSON Schema for custom structured output. When set, bypasses the conversation "
+            "format and generates directly into this schema via constrained decoding."
+        ),
+    )
+
     # Optional LLM overrides
     llm: LLMConfig | None = Field(
         default=None, description="Optional LLM configuration overrides for generation"
@@ -313,6 +322,14 @@ class OutputConfig(BaseModel):
         description="Number of samples to process at a time",
     )
     save_as: str = Field(..., min_length=1, description="Where to save the final dataset")
+
+    format: Literal["messages", "custom"] = Field(
+        default="messages",
+        description=(
+            "'messages' (default): OpenAI chat format. "
+            "'custom': emit records matching generation.output_schema directly."
+        ),
+    )
 
     # Optional checkpoint configuration (nested inside output)
     checkpoint: CheckpointConfig | None = Field(
@@ -655,6 +672,10 @@ See documentation for full examples.
             params["spin_endpoint"] = self.generation.tools.spin_endpoint
             params["scenario_seed"] = self.generation.tools.scenario_seed
             params["max_agent_steps"] = self.generation.tools.max_agent_steps
+
+        if self.generation.output_schema:
+            params["output_schema"] = self.generation.output_schema
+            params["output_format"] = self.output.format
 
         # Handle overrides
         override_provider = overrides.pop("provider", None)

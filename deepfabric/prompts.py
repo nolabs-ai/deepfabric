@@ -195,6 +195,12 @@ Focus on teaching both the reasoning process AND multi-tool usage patterns.
 {{{{examples}}}}
 {{{{subtopics}}}}"""
 
+CUSTOM_SCHEMA_PROMPT = """{{{{system_prompt}}}}
+{{{{instructions}}}}
+{{{{subtopics}}}}
+
+Generate a single JSON object for the topic above. Fill in all required fields accurately and completely."""
+
 CONVERSATION_GENERATION_PROMPT = """Generate a training conversation for a language model with this system prompt:
 
 <system_prompt>
