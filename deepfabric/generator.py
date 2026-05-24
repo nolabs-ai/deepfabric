@@ -34,6 +34,7 @@ from .constants import (
 from .error_codes import classify_error
 from .exceptions import DataSetGeneratorError
 from .llm import LLMClient
+from .llm.client import make_dynamic_model
 from .metrics import trace
 from .progress import ProgressReporter
 from .prompts import (
@@ -975,7 +976,6 @@ class DataSetGenerator:
 
     def _get_custom_schema_model(self) -> type:
         """Build a dynamic model class from the configured output_schema."""
-        from .llm.client import make_dynamic_model
         return make_dynamic_model(self.config.output_schema)
 
     def _get_prompt_template(self) -> str:
@@ -1035,7 +1035,7 @@ class DataSetGenerator:
             # Create a copy of config with sys_msg overridden
             config = self.config.model_copy(update={"sys_msg": include_sys_msg})
 
-        async def _generate_with_retry(
+        async def _generate_with_retry(  # noqa: PLR0911
             prompt: str, sample_idx: int, topic_path_info: TopicPath | None
         ) -> tuple[bool, Exception | Conversation]:
             """Generate a single sample with per-sample retry for validation errors.
@@ -1057,13 +1057,14 @@ class DataSetGenerator:
                             schema_model,
                             max_tokens=config.max_tokens,
                         )
-                        return True, result
                     except Exception as e:  # noqa: BLE001
                         last_error = e
                         if is_validation_error(e) and attempt < self.config.sample_retries:
                             self._emit_retry(sample_idx, attempt, max_attempts, e)
                             continue
                         return False, last_error
+                    else:
+                        return True, result
                 return False, last_error or Exception("Custom schema generation failed")
 
             # Normal conversation builder mode
