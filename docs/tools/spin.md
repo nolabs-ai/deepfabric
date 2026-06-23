@@ -16,13 +16,13 @@ There are two ways to run the Spin service:
     The fastest way to get started. No installation required:
 
     ```bash
-    docker run -d -p 3000:3000 ghcr.io/always-further/deepfabric/tools-sdk:latest
+    docker run -d -p 3000:3000 ghcr.io/nolabs-ai/deepfabric/tools-sdk:latest
     ```
 
     With a custom port:
 
     ```bash
-    docker run -d -p 8080:3000 ghcr.io/always-further/deepfabric/tools-sdk:latest
+    docker run -d -p 8080:3000 ghcr.io/nolabs-ai/deepfabric/tools-sdk:latest
     ```
 
     Verify it's running:

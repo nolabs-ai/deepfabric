@@ -36,7 +36,7 @@ The workflow has two phases:
 ### 1. Start Spin
 
 ```bash
-docker run -d -p 3000:3000 ghcr.io/always-further/deepfabric/tools-sdk:latest
+docker run -d -p 3000:3000 ghcr.io/nolabs-ai/deepfabric/tools-sdk:latest
 ```
 
 ### 2. Import Tools from MCP Server
@@ -356,8 +356,8 @@ done
 !!! example "Complete Examples"
     See working examples in the repository:
 
-    - [`examples/tools-sdk-examples/github/`](https://github.com/always-further/deepfabric/tree/main/examples/tools-sdk-examples/github) - GitHub tools with mock data
-    - [`examples/tools-sdk-examples/kubernetes/`](https://github.com/always-further/deepfabric/tree/main/examples/tools-sdk-examples/kubernetes) - Kubernetes tools with fixtures
+    - [`examples/tools-sdk-examples/github/`](https://github.com/nolabs-ai/deepfabric/tree/main/examples/tools-sdk-examples/github) - GitHub tools with mock data
+    - [`examples/tools-sdk-examples/kubernetes/`](https://github.com/nolabs-ai/deepfabric/tree/main/examples/tools-sdk-examples/kubernetes) - Kubernetes tools with fixtures
 
 ## API Reference
 

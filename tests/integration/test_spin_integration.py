@@ -1,7 +1,7 @@
 """Integration tests for SpinClient with real Spin service.
 
 These tests require the Spin tools-sdk container to be running:
-    docker run -d -p 3000:3000 ghcr.io/always-further/deepfabric/tools-sdk:latest
+    docker run -d -p 3000:3000 ghcr.io/nolabs-ai/deepfabric/tools-sdk:latest
 
 In CI, the container is started as a service in the GitHub Actions workflow.
 """
