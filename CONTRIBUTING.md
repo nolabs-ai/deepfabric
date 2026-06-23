@@ -1,8 +1,8 @@
 ## Contributing
 
-Thank you for considering contributing to [deepfabric](https://github.com/always-further/deepfabric)!
+Thank you for considering contributing to [deepfabric](https://github.com/nolabs-ai/deepfabric)!
 
-When contributing, please first discuss the change you wish to make via [issue](https://github.com/always-further/deepfabric/issues), [email](mailto:hello@alwaysfurther.ai), or any other method with the owners of this repository before making a change.
+When contributing, please first discuss the change you wish to make via [issue](https://github.com/nolabs-ai/deepfabric/issues), [email](mailto:hello@alwaysfurther.ai), or any other method with the owners of this repository before making a change.
 
 Note that we have a [Code of Conduct](./CODE_OF_CONDUCT.md), please follow it in all your interactions with the project.
 

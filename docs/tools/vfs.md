@@ -12,7 +12,7 @@ The Virtual Filesystem (VFS) component provides file operations in an isolated, 
 | `delete_file` | Delete a file | `file_path` (string) |
 
 !!! tip "Need another builtin tool?"
-    If you need a generic tool that would see wide use, [open an issue](https://github.com/always-further/deepfabric/issues) to request it.
+    If you need a generic tool that would see wide use, [open an issue](https://github.com/nolabs-ai/deepfabric/issues) to request it.
 
 ## Configuration
 

@@ -6,7 +6,7 @@ Agent datasets train models to use tools. DeepFabric uses single-turn agent mode
     Agent datasets require the Spin tool service. See [Tools](../tools/index.md) for setup, or just use Docker:
 
     ```bash
-    docker run -d -p 3000:3000 ghcr.io/always-further/deepfabric/tools-sdk:latest
+    docker run -d -p 3000:3000 ghcr.io/nolabs-ai/deepfabric/tools-sdk:latest
     ```
 
 ## When to Use

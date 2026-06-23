@@ -1,8 +1,8 @@
 site_name: DeepFabric Documentation
 site_description: Synthetic Dataset Generation for Language Models
 site_url: https://deepfabric.readthedocs.io
-repo_url: https://github.com/always-further/deepfabric
-repo_name: always-further/deepfabric
+repo_url: https://github.com/nolabs-ai/deepfabric
+repo_name: nolabs-ai/deepfabric
 
 nav:
   - Home: index.md
@@ -128,7 +128,7 @@ plugins:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/always-further/deepfabric
+      link: https://github.com/nolabs-ai/deepfabric
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/deepfabric/
 

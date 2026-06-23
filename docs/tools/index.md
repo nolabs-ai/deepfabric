@@ -65,7 +65,7 @@ Components are WebAssembly modules that handle specific tool categories:
     We provide a prepacked Docker image:
 
     ```bash
-    docker run -d -p 3000:3000 ghcr.io/always-further/deepfabric/tools-sdk:latest
+    docker run -d -p 3000:3000 ghcr.io/nolabs-ai/deepfabric/tools-sdk:latest
     ```
 
     This will now be accessible at `http://localhost:3000`.

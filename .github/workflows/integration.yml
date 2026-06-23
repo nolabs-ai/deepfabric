@@ -21,7 +21,7 @@ jobs:
 
     services:
       spin:
-        image: ghcr.io/always-further/deepfabric/tools-sdk:latest
+        image: ghcr.io/nolabs-ai/deepfabric/tools-sdk:latest
         ports:
           - 3000:3000
 

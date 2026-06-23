@@ -1493,7 +1493,7 @@ def info() -> None:
             tui.console.print(f"  [yellow]{var}[/yellow] - {desc}")
 
         tui.console.print(
-            "\nFor more information, visit: [link]https://github.com/always-further/deepfabric[/link]"
+            "\nFor more information, visit: [link]https://github.com/nolabs-ai/deepfabric[/link]"
         )
 
     except Exception as e:

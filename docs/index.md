@@ -17,7 +17,7 @@ hide:
   <h3>Focused Training for more Grounded and Efficient Models</h3>
 
   <p>
-    <a href="https://github.com/always-further/deepfabric/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">
+    <a href="https://github.com/nolabs-ai/deepfabric/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">
       <img src="https://img.shields.io/badge/Contribute-Good%20First%20Issues-green?style=for-the-badge&logo=github" alt="Good First Issues"/>
     </a>
     &nbsp;
@@ -76,7 +76,7 @@ If you plan to use the training or evaluation utilities described in the [Traini
 === "Development"
 
     ```bash
-    git clone https://github.com/always-further/deepfabric.git
+    git clone https://github.com/nolabs-ai/deepfabric.git
     cd deepfabric
     uv sync --all-extras
     ```

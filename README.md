@@ -7,7 +7,7 @@
 
   <!-- CTA Buttons -->
   <p>
-    <a href="https://github.com/always-further/deepfabric/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">
+    <a href="https://github.com/nolabs-ai/deepfabric/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">
       <img src="https://img.shields.io/badge/Contribute-Good%20First%20Issues-green?style=for-the-badge&logo=github" alt="Good First Issues"/>
     </a>
     &nbsp;
@@ -21,8 +21,8 @@
     <a href="https://opensource.org/licenses/Apache-2.0">
       <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"/>
     </a>
-    <a href="https://github.com/always-further/deepfabric/actions/workflows/test.yml">
-      <img src="https://github.com/always-further/deepfabric/actions/workflows/test.yml/badge.svg" alt="CI Status"/>
+    <a href="https://github.com/nolabs-ai/deepfabric/actions/workflows/test.yml">
+      <img src="https://github.com/nolabs-ai/deepfabric/actions/workflows/test.yml/badge.svg" alt="CI Status"/>
     </a>
     <a href="https://pypi.org/project/deepfabric/">
       <img src="https://img.shields.io/pypi/v/deepfabric.svg" alt="PyPI Version"/>
@@ -84,7 +84,7 @@ DeepFabric also uses YAML configuration with three main sections and optional sh
 > [!NOTE]  
 > The following uses mocked tool execution, so will require a runing Spin service, which we provide in a docker image:
 ```bash
-docker run -d -p 3000:3000 ghcr.io/always-further/deepfabric/tools-sdk:latest`
+docker run -d -p 3000:3000 ghcr.io/nolabs-ai/deepfabric/tools-sdk:latest`
 ```
 
 Save the following as `config.yaml`:
@@ -537,16 +537,16 @@ You can extend DeepFabric with custom tools written in Python, JavaScript, Go, o
 
 ## Resources
 
-- [Documentation](https://always-further.github.io/deepfabric/)
+- [Documentation](https://nolabs-ai.github.io/deepfabric/)
 - [Examples](./examples/README.md)
 - [Tool Tracing Guide](./tool-traces.md)
 - [Discord](https://discord.gg/pPcjYzGvbS)
-- [Issues](https://github.com/always-further/deepfabric/issues)
+- [Issues](https://github.com/nolabs-ai/deepfabric/issues)
 
 ## Development
 
 ```bash
-git clone https://github.com/always-further/deepfabric
+git clone https://github.com/nolabs-ai/deepfabric
 cd deepfabric
 uv sync --all-extras
 make test
