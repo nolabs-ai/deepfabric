@@ -67,7 +67,7 @@ def resolve_num_samples(num_samples: int | str, topic_count: int) -> int:
 
     Args:
         num_samples: Integer, "auto", or percentage string like "50%"
-        topic_count: Number of available topic paths
+        topic_count: Number of available unique topics
 
     Returns:
         Resolved integer sample count
@@ -81,7 +81,7 @@ def resolve_num_samples(num_samples: int | str, topic_count: int) -> int:
     if topic_count == 0:
         raise ConfigurationError(
             "Cannot use 'auto' or percentage num_samples with empty topic model. "
-            "Ensure topic generation produced paths."
+            "Ensure topic generation produced topics."
         )
 
     if num_samples == "auto":
@@ -546,8 +546,8 @@ async def create_dataset_async(
     raw_num_samples = num_samples if num_samples is not None else output_config["num_samples"]
     final_batch_size = batch_size or output_config["batch_size"]
 
-    # Resolve "auto" or percentage to actual count based on topic paths
-    topic_count = len(topic_model.get_all_paths())
+    # Use the same unique topics that drive cycle-based generation.
+    topic_count = len(topic_model.get_unique_topics())
     final_num_samples = resolve_num_samples(raw_num_samples, topic_count)
 
     # Log resolution for dynamic values

@@ -109,11 +109,8 @@ deepfabric generate \
 
     **Special values for `num_samples`:**
 
-    - `"auto"` - Sample count equals the topic model's root-to-leaf path count
-    - `"50%"` / `"200%"` - Sample count relative to that same path count
-
-    For graphs, path count differs from unique topic count. See
-    [sample-count resolution](configuration.md#output).
+    - `"auto"` - One sample per unique topic (one full cycle)
+    - Percentage (e.g., `"50%"`, `"200%"`) - Sample count relative to the number of unique topics
 
 ## Topic Count and Cycles
 
