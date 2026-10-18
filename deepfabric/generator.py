@@ -29,7 +29,6 @@ from .constants import (
     ERROR_CATEGORIES,
     ERROR_DATASET_FILENAME,
     INTERRUPTED_DATASET_FILENAME,
-
 )
 from .error_codes import classify_error
 from .exceptions import DataSetGeneratorError
@@ -442,7 +441,7 @@ class DataSetGenerator:
 
         # Update metadata (after flush counts are updated)
         self._save_checkpoint_metadata()
-        
+
         logger.debug(
             "Checkpoint saved: %d samples, %d failures, %d completed tuples (flushed=%s)",
             len(new_samples),
