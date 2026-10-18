@@ -41,8 +41,7 @@ The validation process examines multiple aspects of your configuration:
     Configuration Summary:
       Topics: mode=tree, depth=3, degree=4, estimated_paths=64 (4^3)
       Output: num_samples=500, concurrency=5, checkpoint_interval=100
-        → Cycles needed: 8 (500 samples ÷ 64 unique topics)
-        → Final cycle: 52 topics (partial)
+        → Estimated one-pass allocation: base quota 7; 52 topics receive one extra
       Hugging Face: repo=username/dataset-name
 
     Warnings:
@@ -50,10 +49,10 @@ The validation process examines multiple aspects of your configuration:
       No save_as path defined for topic tree
     ```
 
-The summary shows cycle-based generation info, including how many times the generator will iterate through unique topics and whether the final cycle is partial.
+The summary shows an estimated one-pass allocation. Runtime allocation uses actual unique topics; graph path estimates are not unique-node counts.
 
-!!! info "Understanding Cycles"
-    DeepFabric uses cycle-based generation where each unique topic is processed once per cycle. When `num_samples` exceeds the number of unique topics, multiple cycles are needed. The `concurrency` setting controls parallel LLM calls.
+!!! info "Understanding Allocation"
+    Each selected topic is admitted once with its full quota. The existing ordered prefix receives extra samples when the target is not divisible by topic count. Concurrency limits parallel topic tasks; requests within a topic are sequential.
 
 ## Error Reporting
 
@@ -78,15 +77,14 @@ Beyond basic validation, the command provides insights into your configuration c
     Configuration Analysis:
       Unique topics: 64 (from tree with degree=4, depth=3)
       Requested samples: 500
-      Cycles needed: 8 (each cycle processes all 64 topics)
-      Final cycle: 52 topics (partial)
-      Concurrency: 5 parallel LLM calls
+      One pass: base quota 7; first 52 topics receive 8 slots
+      Concurrency: 5 active topic tasks
     ```
 
 This analysis helps you understand the generation model:
 
 - **Unique topics**: Deduplicated count from your topic tree/graph
-- **Cycles**: Number of complete passes through all topics
+- **Allocation**: Base quota and ordered-prefix extra recipients in one pass
 - **Concurrency**: How many LLM calls run in parallel
 
 ## Provider-Specific Validation

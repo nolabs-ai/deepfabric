@@ -1,6 +1,5 @@
 import contextlib
 import json
-import math
 import os
 import platform
 import select
@@ -23,12 +22,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
 from .auth import auth as auth_group
+from .checkpoint import version_error
 from .config import DeepFabricConfig
 from .config_manager import apply_cli_overrides, get_final_parameters, load_config
 from .constants import (
     CHECKPOINT_FAILURES_SUFFIX,
     CHECKPOINT_METADATA_SUFFIX,
     CHECKPOINT_SAMPLES_SUFFIX,
+    CHECKPOINT_VERSION,
 )
 from .dataset_manager import create_dataset, save_dataset
 from .exceptions import ConfigurationError
@@ -1345,7 +1346,7 @@ def validate(config_file: str, check_api: bool) -> None:  # noqa: PLR0912
             f"estimated_paths={estimated_paths} ({degree}^{depth})"
         )
 
-        # Output summary with cycle-based generation info
+        # Output summary with topic allocation information
         num_samples = config.output.num_samples
         batch_size = config.output.batch_size
 
@@ -1356,22 +1357,21 @@ def validate(config_file: str, check_api: bool) -> None:  # noqa: PLR0912
             output_info += f", checkpoint_interval={checkpoint.interval}"
         tui.info(output_info)
 
-        # Calculate and display cycle-based generation info
-        if isinstance(num_samples, int):
-            cycles_needed = math.ceil(num_samples / estimated_paths)
-            final_cycle_size = num_samples - (cycles_needed - 1) * estimated_paths
-            is_partial = final_cycle_size < estimated_paths
-
+        if config.topics.mode == "graph":
             tui.info(
-                f"  → Cycles needed: {cycles_needed} "
-                f"({num_samples} samples ÷ {estimated_paths} unique topics)"
+                "  → Graph topic count is an estimate; allocation uses actual non-root unique nodes"
             )
-            if is_partial:
-                tui.info(f"  → Final cycle: {final_cycle_size} topics (partial)")
+        if isinstance(num_samples, int):
+            base, extra = divmod(num_samples, estimated_paths)
+            tui.info(
+                f"  → Estimated one-pass allocation: base quota {base}; {extra} topics receive one extra"
+            )
         elif num_samples == "auto":
-            tui.info(f"  → Will generate 1 sample per unique topic ({estimated_paths} samples)")
+            tui.info(
+                "  → One sample per actual unique topic; count resolved after loading/building topics"
+            )
         else:
-            tui.info("  → Samples calculated at runtime based on topic count")
+            tui.info("  → Allocation calculated at runtime from actual unique topics")
 
         if config.huggingface:
             hf_config = config.get_huggingface_config()
@@ -1992,7 +1992,9 @@ def checkpoint_status(config_file: str) -> None:
     # num_samples is the total target, not per-batch. It can be int, "auto", or percentage like "50%"
     target_samples = output_config.get("num_samples", 0)
     # "auto" or percentage strings can't be resolved without topic model
-    total_target = 0 if isinstance(target_samples, str) else (target_samples or 0)
+    total_target = (metadata.get("plan") or {}).get(
+        "target", 0 if isinstance(target_samples, str) else (target_samples or 0)
+    )
 
     # Display status
     tui.console.print()
@@ -2006,9 +2008,14 @@ def checkpoint_status(config_file: str) -> None:
     )
     tui.console.print(f"  [cyan]Failed:[/cyan]       {checkpoint_failures} samples")
 
-    # Paths processed
-    processed_ids = metadata.get("processed_ids", [])
-    tui.console.print(f"  [cyan]Paths done:[/cyan]   {len(processed_ids)}")
+    completed = metadata.get("completed", [])
+    tui.console.print(f"  [cyan]Slots done:[/cyan]   {len(completed)}")
+    plan = metadata.get("plan") or {}
+    if plan.get("generation_mode") == "topic_allocation":
+        tui.console.print(
+            f"  [cyan]Allocation:[/cyan]   {plan['selected_topics']}/{plan['unique_topics']} topics, "
+            f"base quota {plan['base_quota']}, {plan['remainder']} topics with one extra"
+        )
 
     # Config info
     tui.console.print()
@@ -2042,17 +2049,21 @@ def checkpoint_status(config_file: str) -> None:
             remaining = len(failure_details) - max_failures_to_show
             tui.console.print(f"  ... and {remaining} more failures")
 
+    if metadata.get("version") != CHECKPOINT_VERSION:
+        tui.warning(version_error(metadata.get("version"), metadata_path))
+        return
+
     # Resume instructions
     tui.console.print()
     checkpoint_interval_arg = metadata.get("checkpoint_interval", 10)
     tui.console.print("[green]Resume with:[/green]")
     tui.console.print(
-        f"  deepfabric generate {config_file} --checkpoint-interval {checkpoint_interval_arg} --resume"
+        f"  deepfabric generate {config_file} --checkpoint-interval {checkpoint_interval_arg} --resume --num-samples {total_target}"
     )
     if metadata.get("total_failures", 0) > 0:
         tui.console.print("[green]Retry failed:[/green]")
         tui.console.print(
-            f"  deepfabric generate {config_file} --checkpoint-interval {checkpoint_interval_arg} --resume --retry-failed"
+            f"  deepfabric generate {config_file} --checkpoint-interval {checkpoint_interval_arg} --resume --retry-failed --num-samples {total_target}"
         )
 
 

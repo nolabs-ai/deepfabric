@@ -36,7 +36,7 @@ def validate_path_requirements(
     """
     Validate topic generation parameters (informational only, no longer errors).
 
-    When num_samples exceeds available paths, topics will cycle for even coverage.
+    The generator allocates the exact target across actual unique topics in one pass.
 
     Args:
         mode: Generation mode ('tree' or 'graph')
@@ -46,10 +46,7 @@ def validate_path_requirements(
         batch_size: Batch size for generation (not used in validation, kept for API compat)
         loading_existing: Whether loading existing topic model from file
     """
-    # No validation needed - generator handles all cases:
-    # - num_samples < paths: random subset
-    # - num_samples == paths: all paths used once
-    # - num_samples > paths: topics cycle for even coverage
+    # Allocation and empty-topic checks use actual topics after loading/building.
     pass
 
 
@@ -83,7 +80,9 @@ def show_validation_success(
         tui.success("Path Validation Passed")
         tui.info(f"  Expected {mode} paths: ~{expected_paths} (depth={depth}, degree={degree})")
         if num_samples == "auto":
-            tui.info(f"  Requested samples: auto (will use all ~{expected_paths} paths)")
+            tui.info(
+                f"  Requested samples: auto (resolved from actual unique topics; path estimate ~{expected_paths})"
+            )
         else:
             # Percentage string like "50%"
             pct = float(num_samples[:-1])
@@ -92,7 +91,9 @@ def show_validation_success(
                 f"  Requested samples: {num_samples} (~{estimated_samples} of {expected_paths} paths)"
             )
         if mode == "graph":
-            tui.info("  Note: Graph paths may vary due to cross-connections")
+            tui.info(
+                "  Note: Graph path estimates do not determine unique-topic counts; allocation uses actual non-root nodes"
+            )
         print()  # Extra space before topic generation
         time.sleep(0.5)  # Brief pause to allow user to see the information
         return
@@ -101,13 +102,14 @@ def show_validation_success(
     tui.info(f"  Expected {mode} paths: ~{expected_paths} (depth={depth}, degree={degree})")
     tui.info(f"  Requested samples: {num_samples}")
 
-    if num_samples > expected_paths:
-        cycles = (num_samples + expected_paths - 1) // expected_paths  # ceil division
-        tui.info(f"  Topic cycling: ~{cycles}x passes through topics")
-    else:
-        tui.info(f"  Path utilization: ~{(num_samples / expected_paths) * 100:.1f}%")
+    base, extra = divmod(num_samples, expected_paths)
+    tui.info(
+        f"  Estimated one-pass allocation: base quota {base}; {extra} topics receive one extra"
+    )
 
     if mode == "graph":
-        tui.info("  Note: Graph paths may vary due to cross-connections")
+        tui.info(
+            "  Note: Graph path estimates do not determine unique-topic counts; allocation uses actual non-root nodes"
+        )
     print()  # Extra space before topic generation
     time.sleep(0.5)  # Brief pause to allow user to see the information

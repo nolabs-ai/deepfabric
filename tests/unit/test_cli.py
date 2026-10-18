@@ -398,8 +398,7 @@ def test_generate_command_with_overrides(
     mock_save_dataset.assert_called_once()
 
     args, kwargs = mock_engine_instance.create_data_with_events_async.call_args
-    # num_steps = ceil(num_samples / batch_size) = ceil(10 / 2) = 5
-    assert kwargs["num_steps"] == 5  # noqa: PLR2004
+    assert kwargs["num_samples"] == 10  # noqa: PLR2004
     assert kwargs["batch_size"] == 2  # noqa: PLR2004
     assert kwargs["model_name"] == "model"  # Updated expectation based on current CLI behavior
     assert kwargs["sys_msg"] is False
@@ -774,3 +773,31 @@ def test_topic_only_with_topics_load_fails(cli_runner, sample_config_file):
     finally:
         if os.path.exists(temp_jsonl_path):
             os.unlink(temp_jsonl_path)
+
+
+@patch("deepfabric.topic_manager.create_topic_generator")
+@patch("deepfabric.cli.DataSetGenerator")
+def test_generate_resume_v4_error_does_not_start_generation(
+    mock_engine_class, mock_topics_factory, cli_runner, sample_config_file
+):
+    from deepfabric.checkpoint import version_error  # noqa: PLC0415
+    from deepfabric.exceptions import DataSetGeneratorError  # noqa: PLC0415
+    from deepfabric.tree import Tree  # noqa: PLC0415
+
+    topics = Mock(spec=Tree)
+    topics.build_async.return_value = _async_iter(
+        [{"event": "build_complete", "total_paths": 1, "failed_generations": 0}]
+    )
+    topics.tree_paths = [["Root", "A"]]
+    mock_topics_factory.return_value = topics
+    engine = mock_engine_class.return_value
+    engine.load_checkpoint.side_effect = DataSetGeneratorError(
+        version_error(4, "old.checkpoint.json")
+    )
+    result = cli_runner.invoke(
+        cli, ["generate", sample_config_file, "--resume", "--checkpoint-interval", "1"]
+    )
+    assert result.exit_code != 0
+    assert "migrate_checkpoint.py" in result.output
+    assert "starting fresh" not in result.output
+    engine.create_data_with_events_async.assert_not_called()

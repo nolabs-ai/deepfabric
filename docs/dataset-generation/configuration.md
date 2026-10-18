@@ -231,25 +231,26 @@ Controls final dataset.
 | `system_prompt` | string | - | System message in training data |
 | `include_system_message` | bool | true | Include system message |
 | `num_samples` | int \| string | required | Total samples: integer, `"auto"`, or percentage like `"50%"` |
-| `batch_size` | int | 1 | Parallel generation concurrency (number of simultaneous LLM calls) |
+| `batch_size` | int | 1 | Maximum active topic tasks; requests within a topic are sequential |
 | `save_as` | string | required | Output file path |
 | `format` | string | "messages" | `messages` (OpenAI chat format) or `custom` (matches `generation.output_schema`) |
 | `checkpoint` | object | - | Checkpoint configuration (see below) |
 
 !!! tip "Auto and Percentage Samples"
-    `num_samples` supports special values:
+    `num_samples` supports the following values:
 
-    - **Integer** (e.g., `100`): Generate exactly this many samples
-    - **`"auto"`**: Sample count equals the number of root-to-leaf paths in the topic model
-    - **Percentage** (e.g., `"50%"`, `"200%"`): Sample count relative to that same path count
+    - **Integer** (e.g., `100`): Allocate exactly this many sample slots; terminal failures can reduce successful rows
+    - **`"auto"`**: One sample per actual unique topic
+    - **Percentage** (e.g., `"50%"`, `"200%"`): Sample count relative to the number of unique topics
 
-    For trees, path count equals unique topic count. For graphs the two differ — paths are root-to-leaf routes, while generation cycles over every node — so `"auto"` on a graph does not guarantee one sample per topic.
+    For trees, only the final topic on each branch is counted. 
+    
+    For graphs, every non-root topic is counted, **includes intermediate topics**.
+    Connecting a graph topic to additional parents does not increase the count.
 
-    When `num_samples` exceeds the number of unique topics, DeepFabric iterates through multiple **cycles**. Each cycle processes all unique topics once. For example, with 50 unique topics and `num_samples: 120`:
+    Samples are allocated in the existing topic order using `base, remainder = divmod(target, topic_count)`. The first `remainder` topics receive `base + 1` slots and the rest receive `base`. With 50 topics and target 120, the first 20 topics receive 3 samples and the remaining 30 receive 2. Zero-quota topics are skipped.
 
-    - Cycle 1: 50 samples (topics 1-50)
-    - Cycle 2: 50 samples (topics 1-50)
-    - Cycle 3: 20 samples (topics 1-20, partial)
+    The target is independent of `batch_size`: target 25 with batch size 10 still allocates 25 slots. Samples use independent requests; previously generated siblings are not included in later prompts.
 
 #### output.checkpoint (Optional)
 
@@ -278,26 +279,62 @@ Checkpointing creates three files in the checkpoint directory:
 - `{name}.checkpoint.failures.jsonl` - Failed samples for debugging
 
 !!! tip "Choosing Checkpoint Interval"
-    The checkpoint `interval` specifies how many samples to generate between saves.
+    The checkpoint `interval` counts settled slots (successful samples plus terminal failures). It is not increased to match topic concurrency. Saving can occur inside a topic quota.
 
     Choose an interval that balances recovery granularity (smaller = less work lost) against I/O overhead (larger = fewer disk writes). For example, `interval: 100` saves progress every 100 samples.
 
-!!! info "Cycle-Based Generation Model"
-    DeepFabric uses a cycle-based generation model:
+!!! info "Topic Concurrency"
+    `batch_size` limits active topic tasks in a fixed group. Samples within each topic are generated sequentially. The next group starts after all tasks in the current group settle. A single topic uses one task even if concurrency is larger than one.
 
-    - **Unique topics**: One per leaf path (tree) or per non-root node (graph)
-    - **Cycles**: Number of times to iterate through all unique topics
-    - **Concurrency**: Maximum parallel LLM calls (`batch_size`)
+    Checkpoints retain the exact allocation plan and `(topic_uuid, sample_ordinal)` identities. Changing the target or topic plan on resume is rejected. Ordinary resume skips terminal failures; explicit failure retry preserves successful sibling slots.
 
-    For example, with 100 unique topics and `num_samples: 250`:
+#### Migrating Version 4 Checkpoints
 
-    - Cycles needed: 3 (ceil(250/100))
-    - Cycle 1: 100 samples, Cycle 2: 100 samples, Cycle 3: 50 samples (partial)
+Version 5 checkpoints store per-slot identities and exact allocation plans. Version 4 resume stops with an actionable error; it never silently starts a fresh run. Start a new run in a separate checkpoint directory, or run the offline helper from a source checkout:
 
-    Checkpoints track progress as `(topic_uuid, cycle)` tuples, enabling precise resume from any point.
+```bash
+python tools/migrate_checkpoint.py \
+  --checkpoint-dir old-checkpoints \
+  --config original-config.yaml \
+  --topics original-topics.json \
+  --output-dir migrated-checkpoints
+```
+
+Use `--checkpoint-dir DIR` when the directory contains exactly one checkpoint, or `--checkpoint FILE` to select its metadata explicitly. The tool finds the associated samples and failures in the same directory.
+
+Supported migrations: **v4 -> v5**, for topic-model checkpoints with the original configuration and saved topics. Migration preserves the originals and requires a new destination directory. Supply original overrides with `--num-samples`, `--batch-size`, or `--num-steps` if applicable. Ambiguous identities, inconsistent inputs, and unsupported checkpoint modes are rejected.
+
+Migration preserves the original effective target, including old batch rounding. For an old request of 25 and batch size 10, the migrated target remains 30. Use the exact resume command printed by the helper. If migration is forcibly terminated, remove any incomplete destination before retrying.
+
+#### Python Exact Targets
+
+All four `create_data*()` entry points accept keyword-only `num_samples=None`. A positive integer sets the exact target and overrides `num_steps`; omitted or `None` retains `num_steps * batch_size` (one step by default).
+
+```python
+dataset = engine.create_data(num_samples=25, batch_size=10, topic_model=tree)
+```
+
+Without a topic model, generation uses sequential sample batches, including a final short batch. Target 25/batch size 10 schedules 10, 10, and 5 slots and logs the short batch at info level.
+
+#### Python Generator Reuse and Resume
+
+Each Python generation call starts fresh unless you first call `engine.load_checkpoint()`. A successful load selects resume for the next call, which must use the same target, topic plan, and checkpoint location with checkpointing enabled.
+
+```python
+if engine.load_checkpoint():
+    dataset = engine.create_data(num_samples=25, batch_size=10, topic_model=tree)
+```
+
+With checkpointing enabled, a fresh run refuses an existing checkpoint at its destination. Load it to resume, or choose a new checkpoint location for a fresh run.
+
+#### Partial Results After Errors or Interruptions
+
+On a fatal generation error, the generator attempts to save successful partial rows to `error_dataset.jsonl` in the current working directory, then raises `DataSetGeneratorError`. A handled `KeyboardInterrupt` instead saves `interrupted_dataset.jsonl` and returns partial results. Both exports include checkpointed rows; save failures are logged.
+
+To resume, use the checkpoint set rather than these row-only exports. The CLI's normal stop behavior is described in [Graceful Stop](../cli/generate.md#graceful-stop).
 
 !!! tip "Memory Optimization"
-    When checkpointing is enabled, samples are flushed to disk periodically, keeping memory usage constant regardless of dataset size.
+    When checkpointing is enabled, samples are flushed to disk periodically, reducing in-memory sample storage during generation. Completion identities remain in memory, and final dataset assembly loads the saved rows.
 
 ### huggingface (Optional)
 
