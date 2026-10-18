@@ -24,12 +24,14 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_SAMPLE_RETRIES,
+    DEFAULT_SAMPLING_STRATEGY,
     ENGINE_DEFAULT_BATCH_SIZE,
     ENGINE_DEFAULT_NUM_EXAMPLES,
     ENGINE_DEFAULT_TEMPERATURE,
     ERROR_CATEGORIES,
     ERROR_DATASET_FILENAME,
     INTERRUPTED_DATASET_FILENAME,
+    SamplingStrategy,
 )
 from .error_codes import classify_error
 from .exceptions import DataSetGeneratorError
@@ -202,6 +204,13 @@ class DataSetGeneratorConfig(BaseModel):
         ge=1,
         le=10,
         description="Maximum ReAct reasoning steps per sample before forcing conclusion",
+    )
+    sampling: SamplingStrategy = Field(
+        default=DEFAULT_SAMPLING_STRATEGY,
+        description=(
+            "Sample generation sampling strategy: 'direct' (default) asks for the result directly; 'verbalized' uses "
+            "Verbalized Sampling (arXiv:2510.01171) to reduce mode collapse and repetition"
+        ),
     )
 
     # MCP/Mock tool integration - load tools from HTTP endpoint instead of code

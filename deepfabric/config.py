@@ -12,12 +12,14 @@ from .constants import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
     DEFAULT_SAMPLE_RETRIES,
+    DEFAULT_SAMPLING_STRATEGY,
     ENGINE_DEFAULT_BATCH_SIZE,
     ENGINE_DEFAULT_NUM_EXAMPLES,
     ENGINE_DEFAULT_TEMPERATURE,
     TOPIC_TREE_DEFAULT_DEGREE,
     TOPIC_TREE_DEFAULT_DEPTH,
     TOPIC_TREE_DEFAULT_TEMPERATURE,
+    SamplingStrategy,
 )
 from .exceptions import ConfigurationError
 from .metrics import trace
@@ -119,6 +121,13 @@ class TopicsConfig(BaseModel):
     prompt_style: Literal["default", "isolated", "anchored"] = Field(
         default="default",
         description="For graph mode: 'default' enables cross-connections with generic prompts, 'isolated' disables connections with generic prompts, 'anchored' disables connections and uses domain-aware prompts with examples for focused topic generation",
+    )
+    sampling: SamplingStrategy = Field(
+        default=DEFAULT_SAMPLING_STRATEGY,
+        description=(
+            "Topic expansion sampling strategy: 'direct' (default) asks for the result directly; 'verbalized' uses "
+            "Verbalized Sampling (arXiv:2510.01171) to reduce mode collapse and repetition"
+        ),
     )
 
     # Optional LLM overrides (inherits from top-level llm if not specified)
@@ -262,6 +271,13 @@ class GenerationConfig(BaseModel):
         description="Rate limiting and retry configuration",
     )
     save_as: str | None = Field(default=None, description="Where to save the generated samples")
+    sampling: SamplingStrategy = Field(
+        default=DEFAULT_SAMPLING_STRATEGY,
+        description=(
+            "Sample generation sampling strategy: 'direct' (default) asks for the result directly; 'verbalized' uses "
+            "Verbalized Sampling (arXiv:2510.01171) to reduce mode collapse and repetition"
+        ),
+    )
 
     # Custom structured output schema (bypasses conversation format)
     output_schema: dict | None = Field(
@@ -614,6 +630,7 @@ See documentation for full examples.
             "max_concurrent": self.topics.max_concurrent,
             "max_tokens": self.topics.max_tokens,
             "prompt_style": self.topics.prompt_style,
+            "sampling": self.topics.sampling,
         }
 
         # Handle overrides
@@ -643,6 +660,7 @@ See documentation for full examples.
             "sample_retries": self.generation.sample_retries,
             "max_tokens": self.generation.max_tokens,
             "rate_limit": self.generation.rate_limit,
+            "sampling": self.generation.sampling,
             # Conversation config
             "conversation_type": self.generation.conversation.type,
             "reasoning_style": self.generation.conversation.reasoning_style,

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, Field
 
 from .progress import ProgressReporter
+from .prompts import VerbalizedSamplingPromptBuilder
 from .schemas import ChatMessage, Conversation
 from .stream_simulator import simulate_stream
 
@@ -229,6 +230,9 @@ class SingleShotBuilder(ConversationBuilder):
                     "\nREASONING FORMAT: Generate structured reasoning steps as a list of ReasoningStep objects. "
                     "Each step should have clear thought and action fields."
                 )
+
+        if getattr(self.config, "sampling", "direct") == "verbalized":
+            prompt_parts.append(VerbalizedSamplingPromptBuilder.sample_instructions())
 
         # Add explicit structure requirement
         prompt_parts.append(

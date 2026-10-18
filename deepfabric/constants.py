@@ -1,3 +1,5 @@
+from typing import Literal
+
 # Default values
 DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-4o"
@@ -9,6 +11,14 @@ DEFAULT_BATCH_SIZE = 5
 DEFAULT_NUM_EXAMPLES = 3
 DEFAULT_REQUEST_TIMEOUT = 30
 DEFAULT_MAX_TOKENS = 1000
+
+# Sampling strategy for topic expansion and sample generation prompts.
+# "direct": ask for the N items directly (default).
+# "verbalized": Verbalized Sampling (arXiv:2510.01171) - consider a larger candidate pool,
+# estimate each candidate's typicality, and answer from the low-typicality tail.
+SamplingStrategy = Literal["direct", "verbalized"]
+DEFAULT_SAMPLING_STRATEGY = "direct"
+VERBALIZED_SAMPLING_MAX_EXISTING_TOPICS = 80
 
 # Engine defaults
 ENGINE_DEFAULT_TEMPERATURE = 0.2

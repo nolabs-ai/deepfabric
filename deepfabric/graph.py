@@ -11,10 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .constants import (
     DEFAULT_MAX_TOKENS,
+    DEFAULT_SAMPLING_STRATEGY,
     MAX_RETRY_ATTEMPTS,
     TOPIC_GRAPH_DEFAULT_MODEL,
     TOPIC_GRAPH_DEFAULT_TEMPERATURE,
     TOPIC_GRAPH_SUMMARY,
+    SamplingStrategy,
 )
 from .llm import LLMClient
 from .llm.rate_limit_detector import RateLimitDetector
@@ -23,6 +25,7 @@ from .prompts import (
     GRAPH_EXPANSION_PROMPT,
     GRAPH_EXPANSION_PROMPT_NO_CONNECTIONS,
     GraphPromptBuilder,
+    VerbalizedSamplingPromptBuilder,
 )
 from .schemas import GraphSubtopics
 from .stream_simulator import simulate_stream
@@ -82,6 +85,13 @@ class GraphConfig(BaseModel):
     prompt_style: Literal["default", "isolated", "anchored"] = Field(
         default="default",
         description="Prompt style: 'default' (cross-connections, generic), 'isolated' (no connections, generic), 'anchored' (no connections, domain-aware)",
+    )
+    sampling: SamplingStrategy = Field(
+        default=DEFAULT_SAMPLING_STRATEGY,
+        description=(
+            "Topic expansion sampling strategy: 'direct' (default) asks for the result directly; 'verbalized' uses "
+            "Verbalized Sampling (arXiv:2510.01171) to reduce mode collapse and repetition"
+        ),
     )
 
 
@@ -163,6 +173,7 @@ class Graph(TopicModel):
         self.max_concurrent = self.config.max_concurrent
         self.max_tokens = self.config.max_tokens
         self.prompt_style = self.config.prompt_style
+        self.sampling = self.config.sampling
 
         # Initialize LLM client
         llm_kwargs = {}
@@ -772,6 +783,16 @@ class Graph(TopicModel):
             )
             graph_prompt = graph_prompt.replace("{{current_topic}}", parent_node.topic)
             graph_prompt = graph_prompt.replace("{{num_subtopics}}", str(num_subtopics))
+
+        if self.sampling == "verbalized":
+            # Show topics from every branch, not just siblings: repetition spans branches.
+            graph_prompt = VerbalizedSamplingPromptBuilder.augment_subtopic_prompt(
+                graph_prompt,
+                num_subtopics,
+                existing_topics=[
+                    node.topic for node in self.nodes.values() if node.id != self.root.id
+                ],
+            )
 
         response = await self._generate_subtopics_with_retry(graph_prompt, parent_node)
         if response is None:
