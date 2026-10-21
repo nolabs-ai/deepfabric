@@ -5,6 +5,7 @@ import math
 import os
 import random
 
+from collections import deque
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from itertools import islice
@@ -15,6 +16,7 @@ from datasets import Dataset as HFDataset
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from .builders import ConversationBuilderFactory
+from .bulk import make_collection_model, record_validator
 from .checkpoint import iter_jsonl, read_jsonl, validate_checkpoint, version_error
 from .config import _normalize_reasoning_style
 from .constants import (
@@ -38,6 +40,7 @@ from .metrics import trace
 from .progress import ProgressReporter
 from .prompts import (
     AGENT_COT_TOOLS_PROMPT,
+    BULK_FULL_SAMPLE_PROMPT,
     CONVERSATION_GENERATION_PROMPT,
     CUSTOM_SCHEMA_PROMPT,
     FREETEXT_COT_PROMPT,
@@ -1265,9 +1268,10 @@ class DataSetGenerator:
         if self.config.topic_sample_mode != "independent":
             if topic_model is None:
                 raise DataSetGeneratorError("Coordinated topic sample modes require a topic model")
-            raise DataSetGeneratorError(
-                f"topic_sample_mode={self.config.topic_sample_mode!r} is not implemented yet"
-            )
+            if not self._supports_bulk_custom_records():
+                raise DataSetGeneratorError(
+                    f"topic_sample_mode={self.config.topic_sample_mode!r} is not implemented yet"
+                )
         target = resolve_target(num_samples, num_steps, batch_size)
         if model_name:
             self.model_name = model_name.strip()
@@ -1425,6 +1429,11 @@ class DataSetGenerator:
         include_sys_msg: bool,
     ) -> None:
         """Dispatch a quota without changing topic scheduling or slot accounting."""
+        if self._supports_bulk_custom_records():
+            await self._generate_bulk_topic_records_async(
+                allocation, queue, num_example_demonstrations
+            )
+            return
         if self.config.topic_sample_mode != "independent":
             await queue.put(
                 (
@@ -1444,6 +1453,146 @@ class DataSetGenerator:
             num_example_demonstrations,
             include_sys_msg,
         )
+
+    def _supports_bulk_custom_records(self) -> bool:
+        """Internal execution capability; configuration still gates full scope."""
+        return (
+            self.config.topic_sample_mode == "bulk"
+            and self.config.shared_scope == "full"
+            and self.config.output_schema is not None
+            and not (self.config.tool_components or self.config.custom_tools)
+        )
+
+    def _saved_topic_records(self, topic_id: str) -> list[dict]:
+        """Read successful siblings using checkpoint identities, never row content."""
+        if self._checkpoint_samples_path is None:
+            return []
+        rows = islice(iter_jsonl(self._checkpoint_samples_path), self._flushed_samples_count)
+        return [
+            row for slot, row in zip(self._sample_slots, rows, strict=False) if slot[0] == topic_id
+        ]
+
+    async def _generate_bulk_topic_records_async(
+        self, allocation: dict, queue: asyncio.Queue, num_example_demonstrations: int
+    ) -> None:
+        """Collect custom-schema records using one bounded budget for the topic."""
+        try:
+            await self._collect_bulk_topic_records(allocation, queue, num_example_demonstrations)
+        except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001
+            await queue.put(("error", exc))
+        await queue.put(("done", None))
+
+    async def _collect_bulk_topic_records(
+        self, allocation: dict, queue: asyncio.Queue, num_example_demonstrations: int
+    ) -> None:
+        topic_id = allocation["uuid"]
+        outstanding = deque(
+            ordinal
+            for ordinal in range(allocation["quota"])
+            if (topic_id, ordinal) not in self._completed
+        )
+        if not outstanding or self.stop_requested:
+            return
+        schema = self.config.output_schema
+        validator = record_validator(schema)
+        collection_model = make_collection_model(schema)
+        accepted_siblings = self._saved_topic_records(topic_id)
+        attempts = self._collection_attempts.get(topic_id, 0)
+        budget = self.config.sample_retries + 1
+        last_error = "Bulk collection attempt budget exhausted"
+        while outstanding and attempts < budget and not self.stop_requested:
+            requested = len(outstanding)
+            attempts += 1
+            # Reserve an attempt durably before the request, including interrupted calls.
+            await self._checkpoint_topic_state(queue, topic_id, attempts=attempts)
+            if self.stop_requested:
+                return
+            prompt = BULK_FULL_SAMPLE_PROMPT.format(
+                requested=requested,
+                system_prompt=self.dataset_system_prompt,
+                topic_path=" -> ".join(allocation["path"]),
+                instructions=self.build_custom_instructions_text(),
+                examples=self.build_examples_text(num_example_demonstrations),
+                accepted_siblings=json.dumps(accepted_siblings, ensure_ascii=False),
+            )
+            event = {
+                "topic_id": topic_id,
+                "requested": requested,
+                "accepted": 0,
+                "missing": requested,
+                "attempt": attempts,
+                "budget": budget,
+            }
+            await queue.put(("event", {"event": "seed_request", **event}))
+            retryable = True
+            accepted = 0
+            try:
+                response = await self.llm_client.generate_async(
+                    prompt,
+                    collection_model,
+                    max_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature,
+                )
+                for item in response.items:
+                    if not outstanding:
+                        break
+                    if not isinstance(item, dict) or not validator.is_valid(item):
+                        continue
+                    ordinal = outstanding.popleft()
+                    accepted_siblings.append(item)
+                    accepted += 1
+                    await queue.put(("outcome", ((topic_id, ordinal), item, None)))
+                last_error = "Bulk collection returned fewer valid records than requested"
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                retryable = is_validation_error(exc)
+            # Persist all accepted outcomes before another request or terminal shortfall.
+            await self._checkpoint_topic_state(queue, topic_id, attempts=attempts)
+            await queue.put(
+                (
+                    "event",
+                    {
+                        "event": "seed_response",
+                        **event,
+                        "accepted": accepted,
+                        "missing": len(outstanding),
+                    },
+                )
+            )
+            if outstanding:
+                will_retry = retryable and attempts < budget and not self.stop_requested
+                logger.warning(
+                    "Bulk response for topic %s: requested %d, accepted %d, missing %d; "
+                    "attempt %d/%d. %s",
+                    topic_id,
+                    requested,
+                    accepted,
+                    len(outstanding),
+                    attempts,
+                    budget,
+                    "Retrying outstanding slots." if will_retry else "No retries remain.",
+                )
+                if not retryable:
+                    break
+        if outstanding and not self.stop_requested:
+            logger.warning(
+                "Bulk generation for topic %s stopped after %d/%d attempts: "
+                "accepted %d/%d samples; %d slots marked failed.",
+                topic_id,
+                attempts,
+                budget,
+                len(accepted_siblings),
+                allocation["quota"],
+                len(outstanding),
+            )
+            for ordinal in outstanding:
+                failure = {
+                    "topic_id": topic_id,
+                    "sample_ordinal": ordinal,
+                    "path": " -> ".join(allocation["path"]),
+                    "error": last_error,
+                }
+                await queue.put(("outcome", ((topic_id, ordinal), None, failure)))
 
     async def _generate_independent_topic_samples_async(
         self,
@@ -1685,6 +1834,9 @@ class DataSetGenerator:
                         continue
                     if kind == "error":
                         raise payload
+                    if kind == "event":
+                        yield payload
+                        continue
                     if kind == "topic_state":
                         record_topic_state(payload)
                         # Flush pending rows too: metadata must never reference unwritten rows.
