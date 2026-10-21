@@ -98,3 +98,15 @@ def record_validator(schema: dict):
     validator_type = validator_for(schema)
     validator_type.check_schema(schema)
     return validator_type(schema)
+
+
+def estimate_record_tokens(item_schema: dict | None) -> int:
+    """Coarse warning heuristic, not a tokenizer or an automatic budget adjustment.
+
+    Allow 1000 tokens per full conversation. For custom records, use the larger
+    of 128 tokens and a quarter of the serialized schema's character count as a
+    proxy for record width. Values, constraints, and provider tokenization vary.
+    """
+    if item_schema is None:
+        return 1000
+    return max(128, len(json.dumps(item_schema, ensure_ascii=False)) // 4)

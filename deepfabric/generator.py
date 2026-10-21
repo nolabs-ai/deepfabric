@@ -5,18 +5,20 @@ import math
 import os
 import random
 
-from collections import deque
+from collections import Counter, deque
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any, Literal
 
 from datasets import Dataset as HFDataset
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .builders import ConversationBuilderFactory
-from .bulk import make_collection_model, record_validator
+from .bulk import estimate_record_tokens, make_collection_model, record_validator
 from .checkpoint import iter_jsonl, read_jsonl, validate_checkpoint, version_error
 from .config import _normalize_reasoning_style
 from .constants import (
@@ -48,7 +50,8 @@ from .prompts import (
     AgentPromptBuilder,
 )
 from .sampling import STEP_TOPIC_ID, resolve_target, topic_plan
-from .schemas import Conversation, ToolRegistry, get_conversation_schema
+from .schemas import ChatMessage, Conversation, ToolRegistry, get_conversation_schema
+from .stream_simulator import simulate_stream
 from .tools import BUILTIN_TOOL_REGISTRY
 from .tools.loader import load_tools_from_dict, load_tools_from_endpoint
 from .topic_model import TopicModel, TopicPath
@@ -428,35 +431,53 @@ class DataSetGenerator:
         if self._checkpoint_samples_path is None:
             return
 
-        # Append new samples to checkpoint file
-        if new_samples:
-            with open(self._checkpoint_samples_path, "a", encoding="utf-8") as f:
-                for sample in new_samples:
-                    f.write(json.dumps(sample, separators=(",", ":")) + "\n")
-
-        # Append new failures to failures file
-        if new_failures and self._checkpoint_failures_path:
-            with open(self._checkpoint_failures_path, "a", encoding="utf-8") as f:
-                for failure in new_failures:
-                    f.write(json.dumps(failure, separators=(",", ":")) + "\n")
-
-        self._sample_slots.extend(sample_slots or [])
-
-        # Track settled slots
-        for item in completed_items:
-            self._completed.add(item)
-
-        # Memory optimization: track flushed counts and clear in-memory lists
-        # Must happen BEFORE saving metadata so counts are accurate
-        if flush_memory:
-            self._flushed_samples_count += len(new_samples)
-            self._flushed_failures_count += len(new_failures)
-            # Clear the in-memory lists since data is now on disk
-            self._samples.clear()
-            self.failed_samples.clear()
-
-        # Update metadata (after flush counts are updated)
-        self._save_checkpoint_metadata()
+        # A handled write failure must leave the previous checkpoint usable. In
+        # particular, recovery may retry these same buffers after a metadata error.
+        outcome_paths = [
+            path
+            for path, rows in (
+                (self._checkpoint_samples_path, new_samples),
+                (self._checkpoint_failures_path, new_failures),
+            )
+            if path is not None and rows
+        ]
+        offsets = {path: path.stat().st_size if path.exists() else 0 for path in outcome_paths}
+        slot_count = len(self._sample_slots)
+        added_completed = set(completed_items).difference(self._completed)
+        saved_samples = list(self._samples) if flush_memory else []
+        saved_failures = list(self.failed_samples) if flush_memory else []
+        sample_count = self._flushed_samples_count
+        failure_count = self._flushed_failures_count
+        try:
+            for path, rows in (
+                (self._checkpoint_samples_path, new_samples),
+                (self._checkpoint_failures_path, new_failures),
+            ):
+                if path is not None and rows:
+                    with path.open("a", encoding="utf-8") as stream:
+                        for row in rows:
+                            stream.write(json.dumps(row, separators=(",", ":")) + "\n")
+            self._sample_slots.extend(sample_slots or [])
+            self._completed.update(completed_items)
+            if flush_memory:
+                self._flushed_samples_count += len(new_samples)
+                self._flushed_failures_count += len(new_failures)
+                self._samples.clear()
+                self.failed_samples.clear()
+            self._save_checkpoint_metadata()
+        except (Exception, KeyboardInterrupt):
+            for path, offset in offsets.items():
+                if path.exists():
+                    with path.open("r+b") as stream:
+                        stream.truncate(offset)
+            del self._sample_slots[slot_count:]
+            self._completed.difference_update(added_completed)
+            self._flushed_samples_count = sample_count
+            self._flushed_failures_count = failure_count
+            if flush_memory:
+                self._samples[:] = saved_samples
+                self.failed_samples[:] = saved_failures
+            raise
 
         logger.debug(
             "Checkpoint saved: %d samples, %d failures, %d completed tuples (flushed=%s)",
@@ -504,8 +525,25 @@ class DataSetGenerator:
             self.config.topic_sample_mode == "bulk" and self.config.shared_scope == "seed"
         ):
             metadata["seeds"] = self._topic_seeds
-        with open(self._checkpoint_metadata_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2)
+        # Publish complete JSON atomically; a partial write must not destroy the
+        # last valid metadata before _save_checkpoint can roll back appended rows.
+        temporary_path = None
+        try:
+            with NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self._checkpoint_metadata_path.parent,
+                prefix=f".{self._checkpoint_metadata_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary_path = Path(stream.name)
+                json.dump(metadata, stream, indent=2)
+            os.replace(temporary_path, self._checkpoint_metadata_path)
+        finally:
+            if temporary_path is not None:
+                with suppress(OSError):
+                    temporary_path.unlink(missing_ok=True)
 
     def _validate_checkpoint_compatibility(self, metadata: dict) -> None:
         """Validate that current config is compatible with checkpoint.
@@ -1268,7 +1306,7 @@ class DataSetGenerator:
         if self.config.topic_sample_mode != "independent":
             if topic_model is None:
                 raise DataSetGeneratorError("Coordinated topic sample modes require a topic model")
-            if not self._supports_bulk_custom_records():
+            if not self._supports_bulk_full_records():
                 raise DataSetGeneratorError(
                     f"topic_sample_mode={self.config.topic_sample_mode!r} is not implemented yet"
                 )
@@ -1369,6 +1407,7 @@ class DataSetGenerator:
         self._generation_plan = plan
         # Resume is explicit for each invocation; saving a checkpoint does not select resume.
         self._checkpoint_loaded = False
+        self._warn_bulk_token_budget(plan)
 
     async def _generate_sample_outcome(
         self,
@@ -1429,9 +1468,9 @@ class DataSetGenerator:
         include_sys_msg: bool,
     ) -> None:
         """Dispatch a quota without changing topic scheduling or slot accounting."""
-        if self._supports_bulk_custom_records():
+        if self._supports_bulk_full_records():
             await self._generate_bulk_topic_records_async(
-                allocation, queue, num_example_demonstrations
+                allocation, queue, num_example_demonstrations, include_sys_msg
             )
             return
         if self.config.topic_sample_mode != "independent":
@@ -1454,14 +1493,91 @@ class DataSetGenerator:
             include_sys_msg,
         )
 
-    def _supports_bulk_custom_records(self) -> bool:
+    def _supports_bulk_full_records(self) -> bool:
         """Internal execution capability; configuration still gates full scope."""
         return (
             self.config.topic_sample_mode == "bulk"
             and self.config.shared_scope == "full"
-            and self.config.output_schema is not None
             and not (self.config.tool_components or self.config.custom_tools)
         )
+
+    def _warn_bulk_token_budget(self, plan: dict) -> None:
+        """Warn once per resolved plan using a coarse, count-based output estimate."""
+        if not self._supports_bulk_full_records() or plan["generation_mode"] != "topic_allocation":
+            return
+        completed_counts = Counter(topic_id for topic_id, _ in self._completed)
+        quota = max(
+            (
+                allocation["quota"] - completed_counts[allocation["uuid"]]
+                for allocation in plan["allocations"]
+            ),
+            default=0,
+        )
+        estimated = quota * estimate_record_tokens(self.config.output_schema)
+        if estimated > self.config.max_tokens:
+            logger.warning(
+                "bulk with shared_scope: full may exceed max_tokens=%d: up to %d outstanding "
+                "records per topic (coarse estimate %d output tokens). Raise max_tokens, "
+                "lower the quota, or use shared_scope: seed. The token budget is unchanged.",
+                self.config.max_tokens,
+                quota,
+                estimated,
+            )
+
+    def _prepare_bulk_record(
+        self, item: Any, validator, topic_id: str, include_sys_msg: bool
+    ) -> dict | None:
+        """Validate a whole record and assemble conversation-only shipping fields."""
+        if not isinstance(item, dict) or not validator.is_valid(item):
+            return None
+        if self.config.output_schema is not None:
+            return item
+        try:
+            conversation = Conversation.model_validate(item)
+        except ValidationError:
+            return None
+        messages = conversation.messages
+        if (
+            len(messages) < 2  # noqa: PLR2004 - a user request and assistant reply
+            or messages[0].role != "user"
+            or messages[-1].role != "assistant"
+            or any(message.role not in ("user", "assistant") for message in messages)
+        ):
+            return None
+        if self.config.conversation_type == "cot" and (
+            conversation.reasoning is None
+            or conversation.reasoning.style != (self.config.reasoning_style or "freetext")
+        ):
+            return None
+        if include_sys_msg:
+            conversation.messages.insert(
+                0,
+                ChatMessage(
+                    role="system",
+                    content=self.dataset_system_prompt,
+                ),
+            )
+        conversation.metadata = {**(conversation.metadata or {}), "topic_id": topic_id}
+        return conversation.model_dump(exclude_none=True)
+
+    def _bulk_record_instructions(self) -> str:
+        if self.config.output_schema is not None:
+            return "Each item is one complete record matching the supplied item schema."
+        instructions = (
+            "Each item is a complete conversation: start with a user request and end with "
+            "the assistant's reply. Use only user and assistant messages. Do not generate "
+            "system messages; these are added in code."
+        )
+        if self.config.conversation_type == "cot":
+            style = self.config.reasoning_style or "freetext"
+            content_format = (
+                "a plain string" if style == "freetext" else "a list of reasoning steps"
+            )
+            instructions += (
+                f" Include a reasoning trace in every item with style {style} "
+                f"and content as {content_format}."
+            )
+        return instructions
 
     def _saved_topic_records(self, topic_id: str) -> list[dict]:
         """Read successful siblings using checkpoint identities, never row content."""
@@ -1473,17 +1589,27 @@ class DataSetGenerator:
         ]
 
     async def _generate_bulk_topic_records_async(
-        self, allocation: dict, queue: asyncio.Queue, num_example_demonstrations: int
+        self,
+        allocation: dict,
+        queue: asyncio.Queue,
+        num_example_demonstrations: int,
+        include_sys_msg: bool,
     ) -> None:
-        """Collect custom-schema records using one bounded budget for the topic."""
+        """Collect full records using one bounded budget for the topic."""
         try:
-            await self._collect_bulk_topic_records(allocation, queue, num_example_demonstrations)
+            await self._collect_bulk_topic_records(
+                allocation, queue, num_example_demonstrations, include_sys_msg
+            )
         except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001
             await queue.put(("error", exc))
         await queue.put(("done", None))
 
     async def _collect_bulk_topic_records(
-        self, allocation: dict, queue: asyncio.Queue, num_example_demonstrations: int
+        self,
+        allocation: dict,
+        queue: asyncio.Queue,
+        num_example_demonstrations: int,
+        include_sys_msg: bool,
     ) -> None:
         topic_id = allocation["uuid"]
         outstanding = deque(
@@ -1493,7 +1619,11 @@ class DataSetGenerator:
         )
         if not outstanding or self.stop_requested:
             return
-        schema = self.config.output_schema
+        schema = (
+            self.config.output_schema
+            if self.config.output_schema is not None
+            else Conversation.model_json_schema()
+        )
         validator = record_validator(schema)
         collection_model = make_collection_model(schema)
         accepted_siblings = self._saved_topic_records(topic_id)
@@ -1509,6 +1639,7 @@ class DataSetGenerator:
                 return
             prompt = BULK_FULL_SAMPLE_PROMPT.format(
                 requested=requested,
+                record_instructions=self._bulk_record_instructions(),
                 system_prompt=self.dataset_system_prompt,
                 topic_path=" -> ".join(allocation["path"]),
                 instructions=self.build_custom_instructions_text(),
@@ -1526,6 +1657,16 @@ class DataSetGenerator:
             await queue.put(("event", {"event": "seed_request", **event}))
             retryable = True
             accepted = 0
+            response_received = False
+            step_label = (
+                f"Generating {requested} samples for topic {topic_id} (attempt {attempts}/{budget})"
+            )
+            step_context = {
+                "topic_path": allocation["path"],
+                "conversation_type": self.config.conversation_type,
+            }
+            if self.progress_reporter:
+                self.progress_reporter.emit_step_start(step_label, **event, **step_context)
             try:
                 response = await self.llm_client.generate_async(
                     prompt,
@@ -1533,19 +1674,41 @@ class DataSetGenerator:
                     max_tokens=self.config.max_tokens,
                     temperature=self.config.temperature,
                 )
+                response_received = True
+                simulate_stream(
+                    self.progress_reporter,
+                    response.model_dump_json(indent=2),
+                    source="bulk_collection",
+                    topic_id=topic_id,
+                    attempt=attempts,
+                )
                 for item in response.items:
                     if not outstanding:
                         break
-                    if not isinstance(item, dict) or not validator.is_valid(item):
+                    record = self._prepare_bulk_record(item, validator, topic_id, include_sys_msg)
+                    if record is None:
                         continue
                     ordinal = outstanding.popleft()
-                    accepted_siblings.append(item)
+                    accepted_siblings.append(record)
                     accepted += 1
-                    await queue.put(("outcome", ((topic_id, ordinal), item, None)))
+                    await queue.put(("outcome", ((topic_id, ordinal), record, None)))
                 last_error = "Bulk collection returned fewer valid records than requested"
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 retryable = is_validation_error(exc)
+            finally:
+                if self.progress_reporter:
+                    self.progress_reporter.emit_step_complete(
+                        step_label,
+                        **{
+                            **event,
+                            **step_context,
+                            "accepted": accepted,
+                            "missing": len(outstanding),
+                            "success": accepted > 0,
+                            "response_received": response_received,
+                        },
+                    )
             # Persist all accepted outcomes before another request or terminal shortfall.
             await self._checkpoint_topic_state(queue, topic_id, attempts=attempts)
             await queue.put(

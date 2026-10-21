@@ -396,6 +396,7 @@ Create challenging reasoning problems suitable for training systematic problem-s
 BULK_FULL_SAMPLE_PROMPT = """Generate {requested} diverse, complete JSON records for this topic.
 Return an object with an "items" list containing the records. Each record must match
 the supplied item schema. Fill every required field accurately and completely.
+{record_instructions}
 
 Write the records according to this system prompt:
 <system_prompt>
