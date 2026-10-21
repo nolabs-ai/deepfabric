@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from datasets import Dataset as HFDataset
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from .builders import ConversationBuilderFactory
 from .checkpoint import iter_jsonl, read_jsonl, validate_checkpoint, version_error
@@ -49,6 +49,7 @@ from .schemas import Conversation, ToolRegistry, get_conversation_schema
 from .tools import BUILTIN_TOOL_REGISTRY
 from .tools.loader import load_tools_from_dict, load_tools_from_endpoint
 from .topic_model import TopicModel, TopicPath
+from .topic_sampling import TopicSamplingConfig, warn_duplicate_prompt
 from .utils import build_checkpoint_file_paths, ensure_not_running_loop, is_validation_error
 
 # Handle circular import for type hints
@@ -58,7 +59,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class DataSetGeneratorConfig(BaseModel):
+class DataSetGeneratorConfig(TopicSamplingConfig):
     """Configuration for the data engine."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -242,6 +243,16 @@ class DataSetGeneratorConfig(BaseModel):
         description="Topics file path (stored in checkpoint metadata for auto-resume)",
     )
 
+    @model_validator(mode="after")
+    def validate_sample_mode(self):
+        self.validate_topic_sampling(
+            self.output_schema, has_tools=bool(self.tool_components or self.custom_tools)
+        )
+        warn_duplicate_prompt(
+            self.dataset_system_prompt or self.generation_system_prompt, self.instructions
+        )
+        return self
+
 
 class DataSetGenerator:
     def __init__(self, **kwargs):
@@ -297,6 +308,8 @@ class DataSetGenerator:
         self._completed: set[tuple[str, int]] = set()  # Attempted (UUID, sample ordinal) slots
         self._sample_slots: list[tuple[str, int]] = []
         self._generation_plan: dict | None = None
+        self._topic_seeds: dict[str, dict[str, Any]] = {}
+        self._collection_attempts: dict[str, int] = {}
         self._checkpoint_loaded = False  # Explicit load pending consumption by one run
         self._checkpoint_metadata_path: Path | None = None
         self._checkpoint_samples_path: Path | None = None
@@ -476,8 +489,18 @@ class DataSetGenerator:
             "sample_slots": [list(slot) for slot in self._sample_slots],
             "checkpoint_interval": self.config.checkpoint_interval,
             "topics_file": self.config.topics_file,
+            "topic_sample_mode": self.config.topic_sample_mode,
+            "shared_scope": self.config.shared_scope,
+            "seed_field": self.config.seed_field,
+            "collection_attempts": self._collection_attempts,
         }
 
+        # Sequential history comes from sample_slots and rows, not a seed map.
+        # Retain historical settled seeds when resuming under a different mode.
+        if self._topic_seeds or (
+            self.config.topic_sample_mode == "bulk" and self.config.shared_scope == "seed"
+        ):
+            metadata["seeds"] = self._topic_seeds
         with open(self._checkpoint_metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
@@ -520,6 +543,16 @@ class DataSetGenerator:
                 f"reasoning_style: checkpoint={checkpoint_reasoning}, "
                 f"current={self.config.reasoning_style}"
             )
+
+        for name, default in (
+            ("topic_sample_mode", "independent"),
+            ("shared_scope", "seed"),
+            ("seed_field", None),
+        ):
+            previous = metadata.get(name, default)
+            current = getattr(self.config, name)
+            if previous != current:
+                mismatches.append(f"{name}: checkpoint={previous}, current={current}")
 
         if mismatches:
             logger.warning(
@@ -578,6 +611,33 @@ class DataSetGenerator:
         self._flushed_samples_count = metadata["total_samples"]
         failures = read_jsonl(self._checkpoint_failures_path)
         self._flushed_failures_count = len(failures)
+        self._topic_seeds = metadata.get("seeds", {})
+        self._collection_attempts = metadata.get("collection_attempts", {})
+        if any(
+            metadata.get(name, default) != getattr(self.config, name)
+            for name, default in (
+                ("topic_sample_mode", "independent"),
+                ("shared_scope", "seed"),
+                ("seed_field", None),
+            )
+        ):
+            retained_slots = self._completed
+            if retry_failed:
+                retained_slots = retained_slots - {
+                    (failure["topic_id"], failure["sample_ordinal"]) for failure in failures
+                }
+            self._topic_seeds = {
+                topic_id: {
+                    ordinal: seed
+                    for ordinal, seed in seeds.items()
+                    if (topic_id, int(ordinal)) in retained_slots
+                }
+                for topic_id, seeds in self._topic_seeds.items()
+            }
+            self._collection_attempts.clear()
+            logger.warning(
+                "Discarded unsettled seed and collection-attempt state after mode change"
+            )
         if retry_failed:
             self.retry_checkpoint_failures()
         logger.info(
@@ -602,6 +662,9 @@ class DataSetGenerator:
         self._completed.difference_update((f["topic_id"], f["sample_ordinal"]) for f in failures)
         self._checkpoint_failures_path.write_text("", encoding="utf-8")
         self._flushed_failures_count = 0
+        # A deliberate retry starts a fresh collection budget, but keeps pinned seeds.
+        for failure in failures:
+            self._collection_attempts.pop(failure["topic_id"], None)
         self._save_checkpoint_metadata()
 
     def clear_checkpoint(self) -> None:
@@ -615,6 +678,8 @@ class DataSetGenerator:
         self._completed.clear()
         self._sample_slots.clear()
         self._generation_plan = None
+        self._topic_seeds.clear()
+        self._collection_attempts.clear()
         self._checkpoint_loaded = False
         self._flushed_samples_count = 0
         self._flushed_failures_count = 0
@@ -1197,6 +1262,12 @@ class DataSetGenerator:
         num_samples: int | None = None,
     ) -> AsyncGenerator[dict | HFDataset, None]:
         """Yield native allocation/step events and a dataset; cycle output is not synthesized."""
+        if self.config.topic_sample_mode != "independent":
+            if topic_model is None:
+                raise DataSetGeneratorError("Coordinated topic sample modes require a topic model")
+            raise DataSetGeneratorError(
+                f"topic_sample_mode={self.config.topic_sample_mode!r} is not implemented yet"
+            )
         target = resolve_target(num_samples, num_steps, batch_size)
         if model_name:
             self.model_name = model_name.strip()
@@ -1281,6 +1352,8 @@ class DataSetGenerator:
             self.failed_samples.clear()
             self._completed.clear()
             self._sample_slots.clear()
+            self._topic_seeds.clear()
+            self._collection_attempts.clear()
             self._flushed_samples_count = 0
             self._flushed_failures_count = 0
             self.stop_requested = False
@@ -1325,6 +1398,23 @@ class DataSetGenerator:
             failure["path"] = " -> ".join(topic_path.path)
         return None, failure
 
+    async def _checkpoint_topic_state(
+        self,
+        queue: asyncio.Queue,
+        topic_id: str,
+        *,
+        seeds: dict[str, Any] | None = None,
+        attempts: int | None = None,
+    ) -> None:
+        """Wait for coordinator ownership and persistence before continuing a shared call.
+
+        Seeds map string ordinals to pinned JSON values. Attempts is the cumulative
+        collection count, including unsuccessful and partial requests. Neither settles slots.
+        """
+        acknowledged = asyncio.get_running_loop().create_future()
+        await queue.put(("topic_state", (topic_id, seeds, attempts, acknowledged)))
+        await acknowledged
+
     async def _generate_topic_samples_async(
         self,
         allocation: dict,
@@ -1334,7 +1424,37 @@ class DataSetGenerator:
         num_example_demonstrations: int,
         include_sys_msg: bool,
     ) -> None:
-        """Fulfill a topic quota independently, sequentially; future modes extend this boundary."""
+        """Dispatch a quota without changing topic scheduling or slot accounting."""
+        if self.config.topic_sample_mode != "independent":
+            await queue.put(
+                (
+                    "error",
+                    DataSetGeneratorError(
+                        f"topic_sample_mode={self.config.topic_sample_mode!r} is not implemented yet"
+                    ),
+                )
+            )
+            await queue.put(("done", None))
+            return
+        await self._generate_independent_topic_samples_async(
+            allocation,
+            offset,
+            queue,
+            data_creation_prompt,
+            num_example_demonstrations,
+            include_sys_msg,
+        )
+
+    async def _generate_independent_topic_samples_async(
+        self,
+        allocation: dict,
+        offset: int,
+        queue: asyncio.Queue,
+        data_creation_prompt: str,
+        num_example_demonstrations: int,
+        include_sys_msg: bool,
+    ) -> None:
+        """Fulfill an independent quota with one owned outcome per slot."""
         try:
             for ordinal in range(allocation["quota"]):
                 identity = (allocation["uuid"], ordinal)
@@ -1408,6 +1528,7 @@ class DataSetGenerator:
         queue = None
         recovery_handled = False
         new_samples = new_failures = 0
+        metadata_dirty = False
 
         def record_outcome(payload):
             nonlocal new_samples, new_failures
@@ -1424,6 +1545,15 @@ class DataSetGenerator:
                 pending_failures.append(failure)
                 new_failures += 1
 
+        def record_topic_state(payload):
+            nonlocal metadata_dirty
+            topic_id, seeds, attempts, _ = payload
+            if seeds is not None:
+                self._topic_seeds.setdefault(topic_id, {}).update(seeds)
+            if attempts is not None:
+                self._collection_attempts[topic_id] = attempts
+            metadata_dirty = True
+
         async def stop_workers(*, collect_outcomes=False):
             for task in tasks:
                 task.cancel()
@@ -1435,9 +1565,12 @@ class DataSetGenerator:
                     kind, payload = queue.get_nowait()
                     if kind == "outcome":
                         record_outcome(payload)
+                    elif kind == "topic_state":
+                        record_topic_state(payload)
 
         def flush():
-            if self.config.checkpoint_interval is None or not pending_completed:
+            nonlocal metadata_dirty
+            if self.config.checkpoint_interval is None or not (pending_completed or metadata_dirty):
                 return False
             self._save_checkpoint(
                 pending_samples, pending_failures, pending_completed, sample_slots=pending_slots
@@ -1446,6 +1579,7 @@ class DataSetGenerator:
             pending_failures.clear()
             pending_slots.clear()
             pending_completed.clear()
+            metadata_dirty = False
             return True
 
         def counts():
@@ -1551,6 +1685,20 @@ class DataSetGenerator:
                         continue
                     if kind == "error":
                         raise payload
+                    if kind == "topic_state":
+                        record_topic_state(payload)
+                        # Flush pending rows too: metadata must never reference unwritten rows.
+                        saved = flush()
+                        acknowledged = payload[3]
+                        if not acknowledged.done():
+                            acknowledged.set_result(None)
+                        if saved:
+                            yield {
+                                "event": "checkpoint_saved",
+                                "total_samples": self._flushed_samples_count,
+                                "total_failures": self._flushed_failures_count,
+                            }
+                        continue
                     identity, sample, failure = payload
                     record_outcome(payload)
                     yield {

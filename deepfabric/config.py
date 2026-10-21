@@ -21,6 +21,7 @@ from .constants import (
 )
 from .exceptions import ConfigurationError
 from .metrics import trace
+from .topic_sampling import TopicSamplingConfig, warn_duplicate_prompt
 from .utils import parse_num_samples
 
 
@@ -230,7 +231,7 @@ class ToolsConfig(BaseModel):
     )
 
 
-class GenerationConfig(BaseModel):
+class GenerationConfig(TopicSamplingConfig):
     """Configuration for sample/conversation generation."""
 
     system_prompt: str = Field(
@@ -276,6 +277,11 @@ class GenerationConfig(BaseModel):
     llm: LLMConfig | None = Field(
         default=None, description="Optional LLM configuration overrides for generation"
     )
+
+    @model_validator(mode="after")
+    def validate_sample_mode(self):
+        self.validate_topic_sampling(self.output_schema, has_tools=self.tools is not None)
+        return self
 
 
 class CheckpointConfig(BaseModel):
@@ -490,6 +496,14 @@ class DeepFabricConfig(BaseModel):
         None, description="DeepFabric Cloud configuration"
     )
 
+    @model_validator(mode="after")
+    def warn_duplicate_generation_prompt(self):
+        warn_duplicate_prompt(
+            self.output.system_prompt or self.generation.system_prompt,
+            self.generation.instructions,
+        )
+        return self
+
     @classmethod
     def _detect_old_format(cls, config_dict: dict) -> bool:
         """Detect if config uses old format."""
@@ -660,6 +674,12 @@ See documentation for full examples.
             if self.output.checkpoint
             else False,
         }
+
+        params["topic_sample_mode"] = self.generation.topic_sample_mode
+        params["seed_field"] = self.generation.seed_field
+        for name in ("shared_scope", "completion_includes_topic_path"):
+            if name in self.generation.model_fields_set:
+                params[name] = getattr(self.generation, name)
 
         # Tool config
         if self.generation.tools:
