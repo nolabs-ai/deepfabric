@@ -413,3 +413,42 @@ Write the records according to this system prompt:
 </accepted_siblings>
 The accepted siblings are already complete. Generate different records; do not repeat them.
 """
+
+
+BULK_SEED_SAMPLE_PROMPT = """Generate {requested} diverse values for the seed field {seed_field}.
+Return an object with an "items" list containing only seed-field values, not whole records.
+Each value must match the supplied item schema and determine a distinct record.
+
+<topic_path>
+{topic_path}
+</topic_path>
+{instructions}
+{examples}
+<tools>
+{tools}
+</tools>
+<accepted_siblings>
+{accepted_siblings}
+</accepted_siblings>
+These seed values are already accepted. Generate different values; do not repeat them.
+"""
+
+BULK_COMPLETION_PROMPT = """Write the remainder of one record according to this system prompt:
+<system_prompt>
+{system_prompt}
+</system_prompt>
+
+The pinned seed field is {seed_field}. Its value is:
+<pinned_seed>
+{seed}
+</pinned_seed>
+Return only the other fields, matching the supplied completion schema.
+Do not generate the seed field; its exact value is assembled into the final record in code.
+{topic_path}
+{instructions}
+{examples}
+<tools>
+{tools}
+</tools>
+{retry_feedback}
+"""

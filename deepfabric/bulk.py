@@ -8,6 +8,58 @@ from typing import Any
 from jsonschema.validators import validator_for
 from pydantic import BaseModel
 
+from .llm.client import make_dynamic_model
+
+
+def _rebase_local_refs(value, prefix: str) -> bool:
+    """Rebase schema-local JSON Pointers without changing literal const/enum data."""
+    found = False
+    if isinstance(value, dict):
+        # An explicit resource ID keeps its own reference scope.
+        if "$id" in value:
+            return False
+        ref = value.get("$ref")
+        if isinstance(ref, str) and (ref == "#" or ref.startswith("#/")):
+            value["$ref"] = prefix + ref[1:]
+            found = True
+        # Descend only through schema keywords, preserving literal const/enum data.
+        for keyword in (
+            "properties",
+            "patternProperties",
+            "$defs",
+            "definitions",
+            "dependentSchemas",
+            "dependencies",
+        ):
+            children = value.get(keyword, {})
+            if isinstance(children, dict):
+                for child in children.values():
+                    if isinstance(child, dict):
+                        found = _rebase_local_refs(child, prefix) or found
+        for keyword in (
+            "additionalProperties",
+            "additionalItems",
+            "items",
+            "not",
+            "if",
+            "then",
+            "else",
+            "contains",
+            "propertyNames",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "contentSchema",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "prefixItems",
+        ):
+            found = _rebase_local_refs(value.get(keyword), prefix) or found
+    elif isinstance(value, list):
+        for child in value:
+            found = _rebase_local_refs(child, prefix) or found
+    return found
+
 
 def make_collection_model(item_schema: dict) -> type:
     """Keep a parseable collection intact so valid siblings can survive invalid items.
@@ -18,52 +70,7 @@ def make_collection_model(item_schema: dict) -> type:
     """
     embedded = deepcopy(item_schema)
 
-    def rebase(value):
-        if isinstance(value, dict):
-            # An explicit resource ID keeps its own reference scope.
-            if "$id" in value:
-                return
-            ref = value.get("$ref")
-            if isinstance(ref, str) and (ref == "#" or ref.startswith("#/")):
-                value["$ref"] = "#/properties/items/items" + ref[1:]
-            # Descend only through schema keywords, preserving literal const/enum data.
-            for keyword in (
-                "properties",
-                "patternProperties",
-                "$defs",
-                "definitions",
-                "dependentSchemas",
-                "dependencies",
-            ):
-                children = value.get(keyword, {})
-                if isinstance(children, dict):
-                    for child in children.values():
-                        if isinstance(child, dict):
-                            rebase(child)
-            for keyword in (
-                "additionalProperties",
-                "additionalItems",
-                "items",
-                "not",
-                "if",
-                "then",
-                "else",
-                "contains",
-                "propertyNames",
-                "unevaluatedProperties",
-                "unevaluatedItems",
-                "contentSchema",
-                "allOf",
-                "anyOf",
-                "oneOf",
-                "prefixItems",
-            ):
-                rebase(value.get(keyword))
-        elif isinstance(value, list):
-            for child in value:
-                rebase(child)
-
-    rebase(embedded)
+    _rebase_local_refs(embedded, "#/properties/items/items")
     schema = {
         "type": "object",
         "properties": {"items": {"type": "array", "items": embedded}},
@@ -110,3 +117,63 @@ def estimate_record_tokens(item_schema: dict | None) -> int:
     if item_schema is None:
         return 1000
     return max(128, len(json.dumps(item_schema, ensure_ascii=False)) // 4)
+
+
+def seed_value_schema(schema: dict, seed_field: str) -> dict:
+    """Extract a field while preserving references to its original schema root."""
+    field = deepcopy(schema["properties"][seed_field])
+    if isinstance(field, bool):
+        field = {} if field else {"not": {}}
+    definitions = field.get("$defs", {})
+    namespace = "__deepfabric_source"
+    while namespace in definitions:
+        namespace += "_"
+    prefix = f"#/$defs/{namespace}"
+    if _rebase_local_refs(field, prefix):
+        source = deepcopy(schema)
+        _rebase_local_refs(source, prefix)
+        # Keep definitions off a $ref object: strict provider transforms remove
+        # $ref siblings, which would otherwise discard the reference's target.
+        field = {"anyOf": [field], "$defs": {namespace: source}}
+    if "$schema" in schema:
+        field.setdefault("$schema", schema["$schema"])
+    return field
+
+
+def completion_schema(schema: dict, seed_field: str) -> dict:
+    """Derive the remainder without mutating the configured output schema."""
+    result = deepcopy(schema)
+    result["properties"].pop(seed_field)
+    if "required" in result:
+        result["required"] = [field for field in result["required"] if field != seed_field]
+    return result
+
+
+def make_completion_model(schema: dict) -> type:
+    """Adapt make_dynamic_model to Outlines while keeping flat record serialization."""
+    dynamic = make_dynamic_model(deepcopy(schema))
+
+    class CompletionModel(BaseModel):
+        record: dict[str, Any]
+
+        @classmethod
+        def model_json_schema(cls, **_kwargs: Any) -> dict:
+            return deepcopy(dynamic.model_json_schema())
+
+        @classmethod
+        def model_validate_json(cls, json_data: str) -> "CompletionModel":
+            try:
+                if not isinstance(json.loads(json_data), dict):
+                    raise TypeError("Expected a record object")
+                result = dynamic.model_validate_json(json_data).model_dump()
+            except (ValueError, TypeError) as exc:
+                raise ValueError("Completion validation error: malformed record JSON") from exc
+            if not isinstance(result, dict):
+                raise TypeError("Completion validation error: expected a record object")
+            return cls(record=result)
+
+        def model_dump(self, **_kwargs: Any) -> dict:
+            # A permitted null is data, including when the pinned seed itself is null.
+            return deepcopy(self.record)
+
+    return CompletionModel
