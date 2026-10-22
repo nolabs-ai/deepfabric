@@ -40,6 +40,7 @@ from .constants import (
     ERROR_CATEGORIES,
     ERROR_DATASET_FILENAME,
     INTERRUPTED_DATASET_FILENAME,
+    SEQUENTIAL_PROMPT_WARNING_CHARS,
 )
 from .error_codes import classify_error
 from .exceptions import DataSetGeneratorError
@@ -57,6 +58,7 @@ from .prompts import (
     CONVERSATION_GENERATION_PROMPT,
     CUSTOM_SCHEMA_PROMPT,
     FREETEXT_COT_PROMPT,
+    SEQUENTIAL_SAMPLE_PROMPT,
     STRUCTURED_COT_PROMPT,
     AgentPromptBuilder,
 )
@@ -327,6 +329,7 @@ class DataSetGenerator:
         self._generation_plan: dict | None = None
         self._topic_seeds: dict[str, dict[str, Any]] = {}
         self._collection_attempts: dict[str, int] = {}
+        self._large_sequential_prompt_topics: set[str] = set()
         self._checkpoint_loaded = False  # Explicit load pending consumption by one run
         self._checkpoint_metadata_path: Path | None = None
         self._checkpoint_samples_path: Path | None = None
@@ -1317,7 +1320,11 @@ class DataSetGenerator:
         if self.config.topic_sample_mode != "independent":
             if topic_model is None:
                 raise DataSetGeneratorError("Coordinated topic sample modes require a topic model")
-            if not (self._supports_bulk_full_records() or self._supports_bulk_seeds()):
+            if not (
+                self.config.topic_sample_mode == "sequential"
+                or self._supports_bulk_full_records()
+                or self._supports_bulk_seeds()
+            ):
                 raise DataSetGeneratorError(
                     f"topic_sample_mode={self.config.topic_sample_mode!r} is not implemented yet"
                 )
@@ -1359,7 +1366,11 @@ class DataSetGenerator:
             async for event in events:
                 yield event
         finally:
-            await events.aclose()
+            try:
+                await events.aclose()
+            finally:
+                if self._large_sequential_prompt_topics:
+                    logger.warning(self._sequential_prompt_warning_summary())
 
     def _prepare_generation_run(self, plan: dict) -> None:
         """Consume explicit resume state once; ordinary invocations start independent runs."""
@@ -1415,6 +1426,7 @@ class DataSetGenerator:
                 self._checkpoint_samples_path = None
                 self._checkpoint_failures_path = None
         self.failure_analysis = {category: [] for category in ERROR_CATEGORIES}
+        self._large_sequential_prompt_topics.clear()
         self._generation_plan = plan
         # Resume is explicit for each invocation; saving a checkpoint does not select resume.
         self._checkpoint_loaded = False
@@ -1479,6 +1491,11 @@ class DataSetGenerator:
         include_sys_msg: bool,
     ) -> None:
         """Dispatch a quota without changing topic scheduling or slot accounting."""
+        if self.config.topic_sample_mode == "sequential":
+            await self._generate_sequential_topic_samples_async(
+                allocation, offset, queue, num_example_demonstrations, include_sys_msg
+            )
+            return
         if self._supports_bulk_full_records() or self._supports_bulk_seeds():
             await self._generate_bulk_topic_records_async(
                 allocation, queue, num_example_demonstrations, include_sys_msg, offset=offset
@@ -1932,6 +1949,10 @@ class DataSetGenerator:
             raise ValueError(
                 "Conversation completion validation error: pinned user request changed"
             )
+        self._validate_conversation_tools(conversation)
+
+    def _validate_conversation_tools(self, conversation: Conversation) -> None:
+        """Apply the existing execution-count policy to coordinated conversations."""
         if self.config.tool_components or self.config.custom_tools:
             if not conversation.tool_context or not conversation.tool_context.executions:
                 raise ValueError(
@@ -2104,6 +2125,211 @@ class DataSetGenerator:
             "path": " -> ".join(allocation["path"]),
             "error": last_error,
         }
+
+    def _sequential_history(self, successes: dict[int, dict], ordinal: int) -> list:
+        """Select earlier successful siblings by identity, regardless of JSONL order."""
+        earlier = sorted(index for index in successes if index < ordinal)
+        if self.config.shared_scope == "full":
+            return [successes[index] for index in reversed(earlier)]
+        seeds = []
+        for index in earlier:
+            found, seed = self._seed_from_saved_row(successes[index])
+            if found:
+                seeds.append(seed)
+        return seeds
+
+    async def _generate_sequential_sample_outcome(
+        self,
+        prompt: str,
+        allocation: dict,
+        ordinal: int,
+        sample_idx: int,
+        include_sys_msg: bool,
+    ) -> tuple[dict | None, dict | None]:
+        """Generate one whole sample with one validation budget and fresh builders."""
+        config = self.config.model_copy(
+            update={
+                "sys_msg": include_sys_msg,
+                "dataset_system_prompt": self.dataset_system_prompt,
+            }
+        )
+        custom = config.output_schema is not None
+        model = make_completion_model(config.output_schema) if custom else None
+        validator = record_validator(config.output_schema) if custom else None
+        budget = config.sample_retries + 1
+        error = None
+        for attempt in range(budget):
+            if self.stop_requested:
+                return None, None
+            label = f"Generating sample {sample_idx + 1} (attempt {attempt + 1}/{budget})"
+            metadata = {
+                "sample_idx": sample_idx + 1,
+                "topic_id": allocation["uuid"],
+                "sample_ordinal": ordinal,
+                "topic_path": allocation["path"],
+            }
+            success = False
+            if self.progress_reporter:
+                self.progress_reporter.emit_step_start(label, **metadata)
+            try:
+                if custom:
+                    retry_prompt = prompt + (f"\nRETRY: {error}" if attempt else "")
+                    result = await self.llm_client.generate_async(
+                        retry_prompt,
+                        model,
+                        max_tokens=config.max_tokens,
+                        temperature=config.temperature,
+                    )
+                    sample = result.model_dump(exclude_none=True)
+                    if not validator.is_valid(sample):
+                        raise ValueError(
+                            "Sequential sample validation error: output_schema mismatch"
+                        )
+                else:
+                    builder = ConversationBuilderFactory.create(
+                        config=config,
+                        llm=self.llm_client,
+                        tool_registry=self.tool_registry,
+                        progress_reporter=self.progress_reporter,
+                    )
+                    conversation = await builder.generate(prompt, error)
+                    messages = conversation.messages[int(include_sys_msg) :]
+                    if (
+                        len(messages) < 2  # noqa: PLR2004 - request and reply
+                        or messages[0].role != "user"
+                        or messages[-1].role != "assistant"
+                    ):
+                        raise ValueError(
+                            "Sequential conversation validation error: invalid message order"
+                        )
+                    if not self.tool_registry and any(
+                        message.role not in ("user", "assistant") for message in messages
+                    ):
+                        raise ValueError(
+                            "Sequential conversation validation error: unexpected message role"
+                        )
+                    if config.conversation_type == "cot" and (
+                        conversation.reasoning is None
+                        or conversation.reasoning.style != (config.reasoning_style or "freetext")
+                    ):
+                        raise ValueError(
+                            "Sequential conversation validation error: reasoning style mismatch"
+                        )
+                    self._validate_conversation_tools(conversation)
+                    conversation.metadata = {
+                        **(conversation.metadata or {}),
+                        "topic_id": allocation["uuid"],
+                    }
+                    sample = conversation.model_dump(exclude_none=True)
+                success = True
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+                if self.stop_requested:
+                    return None, None
+                if is_validation_error(exc) and attempt + 1 < budget:
+                    self._emit_retry(sample_idx, attempt, budget, exc)
+                    continue
+                break
+            else:
+                return sample, None
+            finally:
+                if self.progress_reporter:
+                    self.progress_reporter.emit_step_complete(label, **metadata, success=success)
+        return None, {
+            "topic_id": allocation["uuid"],
+            "sample_ordinal": ordinal,
+            "path": " -> ".join(allocation["path"]),
+            "error": error,
+        }
+
+    def _sequential_prompt_warning_summary(self) -> str:
+        count = len(self._large_sequential_prompt_topics)
+        suppressed = max(0, count - 1)
+        return (
+            f"Large sequential prompts detected for {count} {'topic' if count == 1 else 'topics'} "
+            f"({suppressed} {'warning' if suppressed == 1 else 'warnings'} suppressed)."
+        )
+
+    def _check_sequential_prompt_size(
+        self, prompt: str, allocation: dict, ordinal: int
+    ) -> dict | None:
+        """Warn once per run and report each newly affected topic to live consumers."""
+        topic_id = allocation["uuid"]
+        if (
+            len(prompt) < SEQUENTIAL_PROMPT_WARNING_CHARS
+            or topic_id in self._large_sequential_prompt_topics
+        ):
+            return None
+        self._large_sequential_prompt_topics.add(topic_id)
+        affected = len(self._large_sequential_prompt_topics)
+        message = (
+            f"Sequential prompt for topic {topic_id} "
+            f"(sample {ordinal + 1} of {allocation['quota']}) has reached {len(prompt)} characters. "
+            "Large prompts increase input cost and may exceed the model's context window. "
+            "All history is retained."
+        )
+        if affected == 1:
+            logger.warning(message)
+        return {
+            "event": "sequential_prompt_warning",
+            "topic_id": topic_id,
+            "sample_ordinal": ordinal,
+            "topic_quota": allocation["quota"],
+            "characters": len(prompt),
+            "affected_topics": affected,
+            "warnings_suppressed": affected - 1,
+            "message": message if affected == 1 else None,
+            "summary": self._sequential_prompt_warning_summary(),
+        }
+
+    async def _generate_sequential_topic_samples_async(
+        self,
+        allocation: dict,
+        offset: int,
+        queue: asyncio.Queue,
+        num_example_demonstrations: int,
+        include_sys_msg: bool,
+    ) -> None:
+        """Keep successful siblings locally; persisted rows rebuild them on resume."""
+        try:
+            successes = dict(self._saved_topic_outcomes(allocation["uuid"]))
+            for ordinal in range(allocation["quota"]):
+                identity = (allocation["uuid"], ordinal)
+                if identity in self._completed:
+                    continue
+                if self.stop_requested:
+                    break
+                prompt = SEQUENTIAL_SAMPLE_PROMPT.format(
+                    system_prompt=self.dataset_system_prompt,
+                    topic_path=" -> ".join(allocation["path"]),
+                    instructions=self.build_custom_instructions_text(),
+                    examples=self.build_examples_text(num_example_demonstrations),
+                    tools=self.build_tools_text(),
+                    scope=self.config.shared_scope,
+                    history=json.dumps(
+                        self._sequential_history(successes, ordinal), ensure_ascii=False
+                    ),
+                    output_instructions=(
+                        "Generate a complete tool-using conversation with a user request, tool executions, and a final assistant reply."
+                        if self.tool_registry and self.config.output_schema is None
+                        else self._bulk_record_instructions()
+                    ),
+                )
+                warning = self._check_sequential_prompt_size(prompt, allocation, ordinal)
+                if warning is not None:
+                    await queue.put(("event", warning))
+                sample, failure = await self._generate_sequential_sample_outcome(
+                    prompt, allocation, ordinal, offset + ordinal, include_sys_msg
+                )
+                if sample is None and failure is None:
+                    break
+                if sample is not None:
+                    successes[ordinal] = sample
+                await queue.put(("outcome", (identity, sample, failure)))
+                await asyncio.sleep(0)
+        except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001
+            await queue.put(("error", exc))
+        await queue.put(("done", None))
 
     async def _generate_independent_topic_samples_async(
         self,

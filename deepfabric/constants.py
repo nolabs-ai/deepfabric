@@ -94,6 +94,7 @@ CHECKPOINT_METADATA_SUFFIX = ".checkpoint.json"
 CHECKPOINT_SAMPLES_SUFFIX = ".checkpoint.jsonl"
 CHECKPOINT_FAILURES_SUFFIX = ".checkpoint.failures.jsonl"
 CHECKPOINT_VERSION = 5  # v5: exact allocation plan and per-sample ordinal tracking
+SEQUENTIAL_PROMPT_WARNING_CHARS = 50_000
 
 # Stream simulation defaults
 STREAM_SIM_CHUNK_SIZE = 8  # characters per chunk

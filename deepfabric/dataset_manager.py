@@ -117,6 +117,7 @@ async def handle_dataset_events_async(
         async for event in generator:
             if isinstance(event, dict) and "event" in event:
                 if event["event"] == "generation_start":
+                    tui.set_large_prompt_topics(0)
                     settings = _get_tui_settings()
                     is_topic_based = event.get("generation_mode") == "topic_allocation"
                     display_batch_size = event.get(
@@ -296,6 +297,20 @@ async def handle_dataset_events_async(
                             headless_batch_size = display_batch_size
                             headless_last_printed = resumed_samples
                             checkpoint_interval = event.get("checkpoint_interval") or 0
+                elif event["event"] == "sequential_prompt_warning":
+                    tui.set_large_prompt_topics(event["affected_topics"])
+                    if event.get("message"):
+                        tui.log_event(event["message"])
+                    if simple_progress is not None and simple_progress_task is not None:
+                        simple_progress.update(
+                            simple_progress_task,
+                            description=(
+                                f"Generating • Large prompts: {event['affected_topics']} "
+                                f"{'topic' if event['affected_topics'] == 1 else 'topics'} "
+                                f"({event['warnings_suppressed']} "
+                                f"{'warning' if event['warnings_suppressed'] == 1 else 'warnings'} suppressed)"
+                            ),
+                        )
                 elif event["event"] == "step_complete" and not event.get(
                     "progress_reported", False
                 ):
@@ -387,6 +402,13 @@ async def handle_dataset_events_async(
                         else:
                             tui.info(f"Checkpoint: {total_samples} samples saved")
 
+                elif event["event"] in ("generation_interrupted", "generation_error"):
+                    # Stop alternate-screen rendering before the generator logs its summary.
+                    if live:
+                        live.stop()
+                    if simple_progress is not None:
+                        simple_progress.stop()
+                        tui.simple_progress = None
                 elif event["event"] == "generation_stopped":
                     # Graceful stop at checkpoint
                     if live:
@@ -459,6 +481,14 @@ async def handle_dataset_events_async(
             get_tui().error(f"🔍 Debug: Full traceback:\n{traceback.format_exc()}")
         get_tui().error(f"Dataset generation failed: {str(e)}")
         raise
+    finally:
+        if live:
+            live.stop()
+        if simple_progress is not None:
+            simple_progress.stop()
+        tui.live_display = None
+        tui.live_layout = None
+        tui.simple_progress = None
 
     return final_result
 

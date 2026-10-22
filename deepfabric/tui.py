@@ -836,6 +836,7 @@ class DatasetGenerationTUI(StreamObserver):
         self.status_total_samples = 0
         self.status_samples_done = 0
         self.status_failed_total = 0
+        self.large_prompt_topics = 0
         self.status_step_started_at = 0.0
         self.status_last_step_duration = 0.0
         # Checkpoint tracking for status panel
@@ -1138,6 +1139,11 @@ class DatasetGenerationTUI(StreamObserver):
         self._stop_requested = True
         self.update_status_panel()
 
+    def set_large_prompt_topics(self, count: int) -> None:
+        """Update one live counter rather than appending a warning for each topic."""
+        self.large_prompt_topics = count
+        self.update_status_panel()
+
     def _status_panel(self) -> Panel:
         table = Table(show_header=False, box=None, padding=(0, 1))
         table.add_column(style="cyan", no_wrap=True)
@@ -1150,6 +1156,13 @@ class DatasetGenerationTUI(StreamObserver):
         table.add_row("Generated:", f"{self.status_samples_done}/{self.status_total_samples}")
         if self.status_failed_total:
             table.add_row("Failed:", str(self.status_failed_total))
+        if self.large_prompt_topics:
+            suppressed = self.large_prompt_topics - 1
+            table.add_row(
+                "Large prompts:",
+                f"{self.large_prompt_topics} {'topic' if self.large_prompt_topics == 1 else 'topics'} "
+                f"({suppressed} {'warning' if suppressed == 1 else 'warnings'} suppressed)",
+            )
         if self.checkpoint_enabled:
             if self.checkpoint_count > 0:
                 table.add_row(
@@ -1171,6 +1184,7 @@ class DatasetGenerationTUI(StreamObserver):
         if self.live_layout is None:
             return
         try:
+            self.live_layout["main"]["right"]["status"].size = 10 if self.large_prompt_topics else 8
             self.live_layout["main"]["right"]["status"].update(self._status_panel())
         except Exception:
             return
