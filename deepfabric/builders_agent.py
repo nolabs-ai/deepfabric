@@ -170,7 +170,11 @@ class SingleTurnAgentBuilder(ConversationBuilder):
         Raises:
             ValueError: If generation fails at any step
         """
-        self._completion_context = topic_prompt if pinned_user_message is not None else None
+        self._completion_context = (
+            topic_prompt
+            if pinned_user_message is not None or self.config.topic_sample_mode == "sequential"
+            else None
+        )
         try:
             # Initialize Spin session if configured
             await self._ensure_spin_session()
@@ -322,7 +326,7 @@ Generate only the user's question:"""
         Returns:
             AgentStep with thought, optional tool calls, and is_final flag
         """
-        # Pinned completions have one outer slot budget; do not multiply it here.
+        # Coordinated generation has one outer slot budget; do not multiply it here.
         max_retries = (
             0
             if self._completion_context is not None

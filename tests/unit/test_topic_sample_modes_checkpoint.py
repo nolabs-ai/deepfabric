@@ -216,14 +216,12 @@ async def test_state_flush_includes_pending_rows(make_engine):
         pass
 
 
-@pytest.mark.parametrize("mode", ["sequential"])
-async def test_unimplemented_modes_fail_before_generation(make_engine, mode):
+@pytest.mark.parametrize("mode", ["sequential", "bulk"])
+async def test_coordinated_modes_require_topics_before_generation(make_engine, mode):
     engine = make_engine(topic_sample_mode=mode)
     engine._generate_sample_outcome = AsyncMock()
     with pytest.raises(DataSetGeneratorError, match="require a topic model"):
         await engine.create_data_async(num_samples=1)
-    with pytest.raises(DataSetGeneratorError, match="not implemented yet"):
-        await engine.create_data_async(num_samples=1, topic_model=object())
     engine._generate_sample_outcome.assert_not_called()
 
 

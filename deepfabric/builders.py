@@ -274,10 +274,12 @@ class SingleShotBuilder(ConversationBuilder):
             Complete prompt string for the LLM
         """
         # Use the generation system prompt as the base
-        prompt_parts = [self.config.generation_system_prompt]
-
-        # Add topic/scenario
-        prompt_parts.append(f"\nTopic/Scenario: {topic_prompt}")
+        sequential = self.config.topic_sample_mode == "sequential"
+        prompt_parts = (
+            [topic_prompt]
+            if sequential
+            else [self.config.generation_system_prompt, f"\nTopic/Scenario: {topic_prompt}"]
+        )
 
         # Add error feedback if this is a retry
         if error_feedback:
@@ -286,7 +288,7 @@ class SingleShotBuilder(ConversationBuilder):
             )
 
         # Add any additional instructions
-        if self.config.instructions:
+        if self.config.instructions and not sequential:
             prompt_parts.append(f"\nAdditional Instructions: {self.config.instructions}")
 
         # Add reasoning-specific guidance based on style
