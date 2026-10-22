@@ -50,6 +50,8 @@ from .progress import ProgressReporter
 from .prompts import (
     AGENT_COT_TOOLS_PROMPT,
     BULK_COMPLETION_PROMPT,
+    BULK_CONVERSATION_COMPLETION_PROMPT,
+    BULK_CONVERSATION_SEED_PROMPT,
     BULK_FULL_SAMPLE_PROMPT,
     BULK_SEED_SAMPLE_PROMPT,
     CONVERSATION_GENERATION_PROMPT,
@@ -1315,7 +1317,7 @@ class DataSetGenerator:
         if self.config.topic_sample_mode != "independent":
             if topic_model is None:
                 raise DataSetGeneratorError("Coordinated topic sample modes require a topic model")
-            if not (self._supports_bulk_full_records() or self._supports_bulk_custom_seeds()):
+            if not (self._supports_bulk_full_records() or self._supports_bulk_seeds()):
                 raise DataSetGeneratorError(
                     f"topic_sample_mode={self.config.topic_sample_mode!r} is not implemented yet"
                 )
@@ -1477,7 +1479,7 @@ class DataSetGenerator:
         include_sys_msg: bool,
     ) -> None:
         """Dispatch a quota without changing topic scheduling or slot accounting."""
-        if self._supports_bulk_full_records() or self._supports_bulk_custom_seeds():
+        if self._supports_bulk_full_records() or self._supports_bulk_seeds():
             await self._generate_bulk_topic_records_async(
                 allocation, queue, num_example_demonstrations, include_sys_msg, offset=offset
             )
@@ -1510,13 +1512,8 @@ class DataSetGenerator:
             and not (self.config.tool_components or self.config.custom_tools)
         )
 
-    def _supports_bulk_custom_seeds(self) -> bool:
-        return (
-            self.config.topic_sample_mode == "bulk"
-            and self.config.shared_scope == "seed"
-            and self.config.output_schema is not None
-            and self.config.seed_field is not None
-        )
+    def _supports_bulk_seeds(self) -> bool:
+        return self.config.topic_sample_mode == "bulk" and self.config.shared_scope == "seed"
 
     def _warn_bulk_token_budget(self, plan: dict) -> None:
         """Warn once per resolved plan using a coarse, count-based output estimate."""
@@ -1610,6 +1607,17 @@ class DataSetGenerator:
     def _saved_topic_records(self, topic_id: str) -> list[dict]:
         return [row for _, row in self._saved_topic_outcomes(topic_id)]
 
+    def _seed_from_saved_row(self, row: dict) -> tuple[bool, Any]:
+        if self.config.output_schema is not None:
+            field = self.config.seed_field
+            return (True, row[field]) if field in row else (False, None)
+        for message in row.get("messages", []):
+            if message.get("role") == "system":
+                continue
+            content = message.get("content")
+            return message.get("role") == "user" and isinstance(content, str), content
+        return False, None
+
     async def _generate_bulk_topic_records_async(
         self,
         allocation: dict,
@@ -1626,7 +1634,7 @@ class DataSetGenerator:
             )
             if self.config.shared_scope == "seed" and not self.stop_requested:
                 await self._complete_bulk_topic_seeds(
-                    allocation, offset, queue, num_example_demonstrations
+                    allocation, offset, queue, num_example_demonstrations, include_sys_msg
                 )
         except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001
             await queue.put(("error", exc))
@@ -1651,7 +1659,11 @@ class DataSetGenerator:
         if not outstanding or self.stop_requested:
             return
         schema = (
-            seed_value_schema(self.config.output_schema, self.config.seed_field)
+            (
+                seed_value_schema(self.config.output_schema, self.config.seed_field)
+                if self.config.output_schema is not None
+                else {"type": "string", "minLength": 1}
+            )
             if seed_scope
             else self.config.output_schema
             if self.config.output_schema is not None
@@ -1660,11 +1672,11 @@ class DataSetGenerator:
         validator = record_validator(schema)
         collection_model = make_collection_model(schema)
         if seed_scope:
-            context = {
-                ordinal: row[self.config.seed_field]
-                for ordinal, row in self._saved_topic_outcomes(topic_id)
-                if self.config.seed_field in row
-            }
+            context = {}
+            for ordinal, row in self._saved_topic_outcomes(topic_id):
+                found, value = self._seed_from_saved_row(row)
+                if found:
+                    context[ordinal] = value
             context.update({int(ordinal): value for ordinal, value in saved_seeds.items()})
             accepted_siblings = [value for _, value in sorted(context.items())]
         else:
@@ -1687,7 +1699,12 @@ class DataSetGenerator:
                 "accepted_siblings": json.dumps(accepted_siblings, ensure_ascii=False),
             }
             if seed_scope:
-                prompt = BULK_SEED_SAMPLE_PROMPT.format(
+                template = (
+                    BULK_SEED_SAMPLE_PROMPT
+                    if self.config.output_schema is not None
+                    else BULK_CONVERSATION_SEED_PROMPT
+                )
+                prompt = template.format(
                     **common,
                     seed_field=json.dumps(self.config.seed_field),
                     tools=self.build_tools_text(),
@@ -1830,33 +1847,174 @@ class DataSetGenerator:
         offset: int,
         queue: asyncio.Queue,
         num_example_demonstrations: int,
+        include_sys_msg: bool,
     ) -> None:
         topic_id = allocation["uuid"]
         seeds = self._topic_seeds.get(topic_id, {})
-        schema = completion_schema(self.config.output_schema, self.config.seed_field)
-        model = make_completion_model(schema)
-        remainder_validator = record_validator(schema)
-        full_validator = record_validator(self.config.output_schema)
+        if self.config.output_schema is not None:
+            schema = completion_schema(self.config.output_schema, self.config.seed_field)
+            model = make_completion_model(schema)
+            remainder_validator = record_validator(schema)
+            full_validator = record_validator(self.config.output_schema)
         for ordinal in range(allocation["quota"]):
             if self.stop_requested:
                 break
             identity = (topic_id, ordinal)
             if identity in self._completed or str(ordinal) not in seeds:
                 continue
-            sample, failure = await self._complete_custom_seed_outcome(
-                allocation,
-                ordinal,
-                offset + ordinal,
-                seeds[str(ordinal)],
-                model,
-                remainder_validator,
-                full_validator,
-                num_example_demonstrations,
-            )
+            if self.config.output_schema is not None:
+                sample, failure = await self._complete_custom_seed_outcome(
+                    allocation,
+                    ordinal,
+                    offset + ordinal,
+                    seeds[str(ordinal)],
+                    model,
+                    remainder_validator,
+                    full_validator,
+                    num_example_demonstrations,
+                )
+            else:
+                sample, failure = await self._complete_conversation_seed_outcome(
+                    allocation,
+                    ordinal,
+                    offset + ordinal,
+                    seeds[str(ordinal)],
+                    num_example_demonstrations,
+                    include_sys_msg,
+                )
             if sample is None and failure is None:
                 break
             await queue.put(("outcome", (identity, sample, failure)))
             await asyncio.sleep(0)
+
+    def _conversation_completion_prompt(
+        self, allocation: dict, seed: str, num_example_demonstrations: int
+    ) -> str:
+        agent = bool(self.config.tool_components or self.config.custom_tools)
+        if agent:
+            output = "Use the ReAct loop to choose tool calls, observe their results, and reply to the user."
+        elif self.config.conversation_type == "cot":
+            style = self.config.reasoning_style or "freetext"
+            content = "a plain string" if style == "freetext" else "a list of reasoning steps"
+            output = f"Return only assistant content and a reasoning trace with style {style} and content as {content}."
+        else:
+            output = "Return only the assistant content."
+        output += (
+            " The user request is pinned in code; do not reproduce a user turn or a messages array."
+        )
+        return BULK_CONVERSATION_COMPLETION_PROMPT.format(
+            system_prompt=self.dataset_system_prompt,
+            seed_section=(
+                ""
+                if agent
+                else f"<pinned_user_request>\n{json.dumps(seed, ensure_ascii=False)}\n</pinned_user_request>"
+            ),
+            output_instructions=output,
+            topic_path=(
+                f"<topic_path>\n{' -> '.join(allocation['path'])}\n</topic_path>"
+                if self.config.completion_includes_topic_path
+                else ""
+            ),
+            instructions=self.build_custom_instructions_text(),
+            examples=self.build_examples_text(num_example_demonstrations),
+            tools_section=("" if agent else f"<tools>\n{self.build_tools_text()}\n</tools>"),
+        )
+
+    def _validate_pinned_conversation(
+        self, conversation: Conversation, seed: str, include_sys_msg: bool
+    ) -> None:
+        user_index = int(include_sys_msg)
+        if (
+            len(conversation.messages) <= user_index
+            or conversation.messages[user_index].role != "user"
+            or conversation.messages[user_index].content != seed
+        ):
+            raise ValueError(
+                "Conversation completion validation error: pinned user request changed"
+            )
+        if self.config.tool_components or self.config.custom_tools:
+            if not conversation.tool_context or not conversation.tool_context.executions:
+                raise ValueError(
+                    "Agent completion validation error: at least one tool execution is required"
+                )
+            if len(conversation.tool_context.executions) > self.config.max_tools_per_query:
+                if self.config.max_tools_strict:
+                    raise ValueError(
+                        "Agent completion validation error: tool execution limit exceeded"
+                    )
+                conversation.tool_context.executions = conversation.tool_context.executions[
+                    : self.config.max_tools_per_query
+                ]
+
+    async def _complete_conversation_seed_outcome(
+        self,
+        allocation: dict,
+        ordinal: int,
+        sample_idx: int,
+        seed: str,
+        num_example_demonstrations: int,
+        include_sys_msg: bool,
+    ) -> tuple[dict | None, dict | None]:
+        prompt = self._conversation_completion_prompt(allocation, seed, num_example_demonstrations)
+        config = self.config.model_copy(
+            update={
+                "sys_msg": include_sys_msg,
+                "dataset_system_prompt": self.dataset_system_prompt,
+            }
+        )
+        budget = self.config.sample_retries + 1
+        error_feedback = None
+        for attempt in range(budget):
+            if self.stop_requested:
+                return None, None
+            label = f"Completing sample {sample_idx + 1} (attempt {attempt + 1}/{budget})"
+            metadata = {
+                "sample_idx": sample_idx + 1,
+                "topic_id": allocation["uuid"],
+                "sample_ordinal": ordinal,
+                "topic_path": allocation["path"],
+            }
+            success = False
+            if self.progress_reporter:
+                self.progress_reporter.emit_step_start(label, **metadata)
+            try:
+                builder = ConversationBuilderFactory.create(
+                    config=config,
+                    llm=self.llm_client,
+                    tool_registry=self.tool_registry,
+                    progress_reporter=self.progress_reporter,
+                )
+                conversation = await builder.generate(
+                    prompt,
+                    error_feedback,
+                    pinned_user_message=ChatMessage(role="user", content=seed),
+                )
+                self._validate_pinned_conversation(conversation, seed, include_sys_msg)
+                conversation.metadata = {
+                    **(conversation.metadata or {}),
+                    "topic_id": allocation["uuid"],
+                }
+                sample = conversation.model_dump(exclude_none=True)
+                success = True
+            except Exception as exc:  # noqa: BLE001
+                error_feedback = str(exc)
+                if self.stop_requested:
+                    return None, None
+                if is_validation_error(exc) and attempt + 1 < budget:
+                    self._emit_retry(sample_idx, attempt, budget, exc)
+                    continue
+                break
+            else:
+                return sample, None
+            finally:
+                if self.progress_reporter:
+                    self.progress_reporter.emit_step_complete(label, **metadata, success=success)
+        return None, {
+            "topic_id": allocation["uuid"],
+            "sample_ordinal": ordinal,
+            "path": " -> ".join(allocation["path"]),
+            "error": error_feedback,
+        }
 
     async def _complete_custom_seed_outcome(
         self,

@@ -452,3 +452,34 @@ Do not generate the seed field; its exact value is assembled into the final reco
 </tools>
 {retry_feedback}
 """
+
+
+BULK_CONVERSATION_SEED_PROMPT = """Generate {requested} diverse user requests for this topic.
+Return an object with an "items" list of strings containing only the user requests.
+Do not generate assistant replies or whole conversations.
+
+<topic_path>
+{topic_path}
+</topic_path>
+{instructions}
+{examples}
+<tools>
+{tools}
+</tools>
+<accepted_siblings>
+{accepted_siblings}
+</accepted_siblings>
+These user requests are already accepted. Generate different requests; do not repeat them.
+"""
+
+BULK_CONVERSATION_COMPLETION_PROMPT = """Write the assistant's reply according to this system prompt:
+<system_prompt>
+{system_prompt}
+</system_prompt>
+{seed_section}
+{output_instructions}
+{topic_path}
+{instructions}
+{examples}
+{tools_section}
+"""

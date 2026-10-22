@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from .builders import ConversationBuilder
+from .builders import ConversationBuilder, pinned_user_copy
 from .constants import DEFAULT_SAMPLE_RETRIES
 from .exceptions import DataSetGeneratorError
 from .progress import ProgressReporter
@@ -128,6 +128,7 @@ class SingleTurnAgentBuilder(ConversationBuilder):
 
         # Track seen tool signatures to skip duplicates
         self._seen_tool_signatures: set[str] = set()
+        self._completion_context: str | None = None
 
         # Initialize Spin client if endpoint is configured
         spin_endpoint = getattr(config, "spin_endpoint", None)
@@ -146,7 +147,13 @@ class SingleTurnAgentBuilder(ConversationBuilder):
             else:
                 logger.info("Spin execution enabled: %s", spin_endpoint)
 
-    async def generate(self, topic_prompt: str, error_feedback: str | None = None) -> Conversation:
+    async def generate(
+        self,
+        topic_prompt: str,
+        error_feedback: str | None = None,
+        *,
+        pinned_user_message: ChatMessage | None = None,
+    ) -> Conversation:
         """Generate single-turn agent conversation with tools using ReAct loop.
 
         Uses a think-act-observe loop where each step's tool calls are based on
@@ -163,12 +170,17 @@ class SingleTurnAgentBuilder(ConversationBuilder):
         Raises:
             ValueError: If generation fails at any step
         """
+        self._completion_context = topic_prompt if pinned_user_message is not None else None
         try:
             # Initialize Spin session if configured
             await self._ensure_spin_session()
 
             # Step 1: Generate user question
-            user_message = await self._generate_user_question(topic_prompt)
+            user_message = (
+                pinned_user_copy(pinned_user_message)
+                if pinned_user_message is not None
+                else await self._generate_user_question(topic_prompt)
+            )
 
             # Step 2: ReAct loop - think, act, observe
             all_steps: list[AgentStep] = []
@@ -218,8 +230,11 @@ class SingleTurnAgentBuilder(ConversationBuilder):
                 user_message, all_steps, all_tool_results, agent_response, topic_prompt
             )
         finally:
-            # Always cleanup Spin session
-            await self._cleanup_spin_session()
+            # Always clean up the session and request-scoped completion framing.
+            try:
+                await self._cleanup_spin_session()
+            finally:
+                self._completion_context = None
 
     async def _ensure_spin_session(self) -> None:
         """Initialize Spin session if configured."""
@@ -307,7 +322,12 @@ Generate only the user's question:"""
         Returns:
             AgentStep with thought, optional tool calls, and is_final flag
         """
-        max_retries = getattr(self.config, "sample_retries", DEFAULT_SAMPLE_RETRIES)
+        # Pinned completions have one outer slot budget; do not multiply it here.
+        max_retries = (
+            0
+            if self._completion_context is not None
+            else getattr(self.config, "sample_retries", DEFAULT_SAMPLE_RETRIES)
+        )
         last_error: Exception | None = None
         current_feedback = error_feedback
 
@@ -360,6 +380,8 @@ Generate only the user's question:"""
             "What is your next step?",
         ]
 
+        if self._completion_context is not None:
+            prompt_parts.insert(0, f"## Completion Context\n{self._completion_context}\n")
         if error_feedback:
             prompt_parts.insert(
                 -1,
@@ -572,7 +594,12 @@ Generate only the user's question:"""
         if context:
             context_section = f"Previous conversation:\n{context}\n\n"
 
-        prompt = f"""{self.config.dataset_system_prompt}
+        framing = (
+            self._completion_context
+            if self._completion_context is not None
+            else self.config.dataset_system_prompt
+        )
+        prompt = f"""{framing}
 
 Available tools:
 {tools_info}
@@ -690,7 +717,12 @@ Remember: You have access to the tools listed above and have used them in this c
 
         reasoning_trace = ReasoningTrace(
             style=self.config.reasoning_style or "agent",  # type: ignore
-            content=reasoning_steps,
+            content=(
+                "\n".join(step.thought for step in reasoning_steps)
+                if self._completion_context is not None
+                and self.config.reasoning_style == "freetext"
+                else reasoning_steps
+            ),
         )
 
         # Build agent context

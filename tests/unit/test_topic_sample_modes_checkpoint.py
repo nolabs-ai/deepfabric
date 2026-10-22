@@ -216,7 +216,7 @@ async def test_state_flush_includes_pending_rows(make_engine):
         pass
 
 
-@pytest.mark.parametrize("mode", ["bulk", "sequential"])
+@pytest.mark.parametrize("mode", ["sequential"])
 async def test_unimplemented_modes_fail_before_generation(make_engine, mode):
     engine = make_engine(topic_sample_mode=mode)
     engine._generate_sample_outcome = AsyncMock()
