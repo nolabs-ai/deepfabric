@@ -191,6 +191,48 @@ deepfabric generate config.yaml \
 
     This creates a research dataset with comprehensive topic coverage and high-quality content generation.
 
+## Prompt Tracing and Dry Runs
+
+Save the prompts used during generation with `--trace-prompt`:
+
+```bash
+deepfabric generate config.yaml --trace-prompt
+```
+
+By default, only the first prompt for each stage (such as topic expansion or
+sample generation) is recorded per run. Add `--verbose` to record every prompt:
+
+```bash
+deepfabric generate config.yaml --trace-prompt --verbose
+```
+
+The trace file location is chosen in this order:
+
+1. `--trace-prompt-file PATH`
+2. `DEEPFABRIC_PROMPT_TRACE_FILE`
+3. `./prompt-trace.jsonl` in your current working directory
+
+```bash
+deepfabric generate config.yaml --trace-prompt --trace-prompt-file ./inspect.jsonl
+```
+
+
+Traces are appended to the JSONL file without interrupting the 
+progress display. The parent directory must already exist.
+
+### Preview without generating data
+
+Use `--dry-run` to print prompts in the terminal without calling models,
+executing tools, or creating topic and dataset files:
+
+```bash
+deepfabric generate config.yaml --dry-run
+```
+
+Values that depend on earlier steps use placeholders such as `{{{topic path}}}`
+and `{{{tool result}}}`. Add `--verbose` to preview representative later cases,
+or `--trace-prompt` to also save the previews to a file.
+
 ## Progress Monitoring
 
 The generation process provides real-time feedback:

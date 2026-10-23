@@ -1657,6 +1657,41 @@ class DataSetGenerator:
             await queue.put(("error", exc))
         await queue.put(("done", None))
 
+    def _build_bulk_collection_prompt(
+        self,
+        allocation: dict,
+        requested: int,
+        accepted_siblings: list,
+        num_example_demonstrations: int,
+    ) -> str:
+        """Compose a bulk collection request without checkpoint or provider operations."""
+        seed_scope = self.config.shared_scope == "seed"
+        common = {
+            "requested": requested,
+            "topic_path": " -> ".join(allocation["path"]),
+            "instructions": self.build_custom_instructions_text(),
+            "examples": self.build_examples_text(num_example_demonstrations),
+            "accepted_siblings": json.dumps(accepted_siblings, ensure_ascii=False),
+        }
+        if seed_scope:
+            template = (
+                BULK_SEED_SAMPLE_PROMPT
+                if self.config.output_schema is not None
+                else BULK_CONVERSATION_SEED_PROMPT
+            )
+            prompt = template.format(
+                **common,
+                seed_field=json.dumps(self.config.seed_field),
+                tools=self.build_tools_text(),
+            )
+        else:
+            prompt = BULK_FULL_SAMPLE_PROMPT.format(
+                **common,
+                record_instructions=self._bulk_record_instructions(),
+                system_prompt=self.dataset_system_prompt,
+            )
+        return prompt
+
     async def _collect_bulk_topic_records(
         self,
         allocation: dict,
@@ -1708,30 +1743,9 @@ class DataSetGenerator:
             await self._checkpoint_topic_state(queue, topic_id, attempts=attempts)
             if self.stop_requested:
                 return
-            common = {
-                "requested": requested,
-                "topic_path": " -> ".join(allocation["path"]),
-                "instructions": self.build_custom_instructions_text(),
-                "examples": self.build_examples_text(num_example_demonstrations),
-                "accepted_siblings": json.dumps(accepted_siblings, ensure_ascii=False),
-            }
-            if seed_scope:
-                template = (
-                    BULK_SEED_SAMPLE_PROMPT
-                    if self.config.output_schema is not None
-                    else BULK_CONVERSATION_SEED_PROMPT
-                )
-                prompt = template.format(
-                    **common,
-                    seed_field=json.dumps(self.config.seed_field),
-                    tools=self.build_tools_text(),
-                )
-            else:
-                prompt = BULK_FULL_SAMPLE_PROMPT.format(
-                    **common,
-                    record_instructions=self._bulk_record_instructions(),
-                    system_prompt=self.dataset_system_prompt,
-                )
+            prompt = self._build_bulk_collection_prompt(
+                allocation, requested, accepted_siblings, num_example_demonstrations
+            )
             event = {
                 "topic_id": topic_id,
                 "requested": requested,

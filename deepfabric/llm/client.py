@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from ..exceptions import DataSetGeneratorError
 from .errors import handle_provider_error
+from .prompt_trace import PromptPreviewCaptured, get_prompt_trace
 from .rate_limit_config import (
     RateLimitConfig,
     create_rate_limit_config,
@@ -73,11 +74,13 @@ class LLMClient:
 
         self.retry_handler = RetryHandler(self.rate_limit_config, provider)
 
-        self.model: Any = make_outlines_model(provider, model_name, **kwargs)
+        session = get_prompt_trace()
+        preview = session is not None and session.dry_run
+        self.model: Any = None if preview else make_outlines_model(provider, model_name, **kwargs)
         # Lazy-initialize async_model only when needed
         self._async_model: Any | None = None
         self._async_model_initialized: bool = False
-        if self.model is None:
+        if self.model is None and not preview:
             msg = f"Failed to create model for {provider}/{model_name}"
             raise DataSetGeneratorError(msg)
 
@@ -114,10 +117,20 @@ class LLMClient:
             The max_retries parameter is deprecated. Use rate_limit_config in __init__ instead.
             If provided, it will be ignored in favor of the configured retry handler.
         """
+        if (session := get_prompt_trace()) is not None and session.dry_run:
+            self._trace_prompt(prompt, schema)
         return self._generate_with_retry(prompt, schema, **kwargs)
 
     # Providers that only support async generation (native API, not Outlines)
     _ASYNC_ONLY_PROVIDERS = frozenset({"anthropic", "gemini"})
+
+    def _trace_prompt(self, prompt: Any, schema: Any) -> None:
+        """Record an explicitly enabled trace, stopping previews before any model call."""
+        session = get_prompt_trace()
+        if session is not None:
+            session.record(self.provider, self.model_name, prompt, schema)
+            if session.dry_run:
+                raise PromptPreviewCaptured
 
     @retry_with_backoff
     def _generate_with_retry(self, prompt: str, schema: Any, **kwargs) -> Any:
@@ -147,6 +160,7 @@ class LLMClient:
             generation_schema = _create_openai_compatible_schema(schema)
 
         # Generate JSON string using the model
+        self._trace_prompt(prompt, schema)
         json_output = self.model(prompt, generation_schema, **kwargs)
 
         # Parse and validate the JSON response with the ORIGINAL schema
@@ -178,6 +192,8 @@ class LLMClient:
             The max_retries parameter is deprecated. Use rate_limit_config in __init__ instead.
             If provided, it will be ignored in favor of the configured retry handler.
         """
+        if (session := get_prompt_trace()) is not None and session.dry_run:
+            self._trace_prompt(prompt, schema)
         if self.async_model is None:
             # Fallback to running the synchronous path in a worker thread
             return await asyncio.to_thread(self.generate, prompt, schema, **kwargs)
@@ -213,6 +229,7 @@ class LLMClient:
             return await asyncio.to_thread(self.generate, prompt, schema, **kwargs)
 
         # Call the async model (guaranteed non-None by check above)
+        self._trace_prompt(prompt, schema)
         json_output = await async_model(prompt, generation_schema, **kwargs)
 
         # Validate with original schema to ensure proper validation

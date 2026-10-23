@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import json
 import os
@@ -26,17 +27,16 @@ from .checkpoint import version_error
 from .config import DeepFabricConfig
 from .config_manager import apply_cli_overrides, get_final_parameters, load_config
 from .constants import (
-    CHECKPOINT_FAILURES_SUFFIX,
-    CHECKPOINT_METADATA_SUFFIX,
-    CHECKPOINT_SAMPLES_SUFFIX,
     CHECKPOINT_VERSION,
 )
-from .dataset_manager import create_dataset,resolve_num_samples, save_dataset
+from .dataset_manager import create_dataset, resolve_num_samples, save_dataset
 from .exceptions import ConfigurationError, DataSetGeneratorError
 from .generator import DataSetGenerator
 from .graph import Graph
 from .llm import VerificationStatus, verify_provider_api_key
+from .llm.prompt_trace import prompt_tracing
 from .metrics import set_trace_debug, trace
+from .prompt_preview import preview_generation
 from .topic_manager import load_or_build_topic_model, save_topic_model
 from .topic_model import TopicModel
 from .tui import configure_tui, get_dataset_tui, get_tui
@@ -167,6 +167,10 @@ class GenerateOptions(BaseModel):
     retry_failed: bool = False
     prepared_engine: DataSetGenerator | None = None
     prepared_topics: TopicModel | None = None
+    trace_prompt: bool = False
+    trace_prompt_file: str | None = None
+    verbose: bool = False
+    dry_run: bool = False
 
     @model_validator(mode="after")
     def validate_mode_constraints(self) -> "GenerateOptions":
@@ -312,7 +316,8 @@ def _load_and_prepare_generation_context(
 
     # Step 2: Validate API keys EARLY - this is critical for user feedback
     # This must happen before any LLM operations and should be clearly visible
-    _validate_api_keys(config, options.provider)
+    if not options.dry_run:
+        _validate_api_keys(config, options.provider)
 
     topics_overrides_raw, generation_overrides_raw = apply_cli_overrides(
         output_system_prompt=options.output_system_prompt,
@@ -338,7 +343,7 @@ def _load_and_prepare_generation_context(
     loading_existing = bool(options.topics_load)
 
     # Skip path validation for topic-only mode since we're not generating dataset samples
-    if not skip_path_validation:
+    if not skip_path_validation and not options.dry_run:
         validate_path_requirements(
             mode=config.topics.mode,
             depth=final_depth,
@@ -855,6 +860,18 @@ def _run_generation(
     is_flag=True,
     help="Resume an existing checkpoint and retry failed samples as well as outstanding slots",
 )
+@click.option("--trace-prompt", is_flag=True, help="Record prompts to a JSONL file.")
+@click.option(
+    "--trace-prompt-file",
+    type=click.Path(dir_okay=False),
+    help="Trace file (requires --trace-prompt).",
+)
+@click.option("--verbose", is_flag=True, help="Trace every prompt instead of the first per stage.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Preview prompts with placeholders; do not call models or generate output assets.",
+)
 def generate(  # noqa: PLR0913
     config_file: str | None,
     output_system_prompt: str | None = None,
@@ -885,8 +902,19 @@ def generate(  # noqa: PLR0913
     checkpoint_path: str | None = None,
     resume: bool = False,
     retry_failed: bool = False,
+    trace_prompt: bool = False,
+    trace_prompt_file: str | None = None,
+    verbose: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Generate training data from a YAML configuration file or CLI parameters."""
+    if trace_prompt_file and not trace_prompt:
+        raise click.UsageError("--trace-prompt-file requires --trace-prompt")
+    click.get_current_context().with_resource(
+        prompt_tracing(
+            enabled=trace_prompt, path=trace_prompt_file, verbose=verbose, dry_run=dry_run
+        )
+    )
     # Handle deprecated --agent-mode flag
     if agent_mode == "multi_turn":
         click.echo(
@@ -946,6 +974,10 @@ def generate(  # noqa: PLR0913
             checkpoint_path=checkpoint_path,
             resume=resume,
             retry_failed=retry_failed,
+            trace_prompt=trace_prompt,
+            trace_prompt_file=trace_prompt_file,
+            verbose=verbose,
+            dry_run=dry_run,
         )
     except (PydanticValidationError, ValueError) as error:
         handle_error(click.get_current_context(), ConfigurationError(str(error)))
@@ -953,7 +985,7 @@ def generate(  # noqa: PLR0913
 
     try:
         # Configure TUI before any output
-        configure_tui(options.tui)
+        configure_tui("simple" if dry_run else options.tui)
         tui = get_tui()  # type: ignore
 
         # Show initialization header
@@ -961,6 +993,18 @@ def generate(  # noqa: PLR0913
         print()
 
         preparation = _load_and_prepare_generation_context(options, skip_path_validation=topic_only)
+
+        if dry_run:
+            asyncio.run(
+                preview_generation(
+                    preparation.config,
+                    topics_overrides=preparation.topics_overrides,
+                    generation_overrides=preparation.generation_overrides,
+                    topic_only=topic_only,
+                    topics_load=bool(topics_load),
+                )
+            )
+            return
 
         checkpoint_dir = _prepare_output_destinations(preparation, options)
         topic_model = options.prepared_topics or _initialize_topic_model(
