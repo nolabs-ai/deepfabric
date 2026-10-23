@@ -242,6 +242,22 @@ The generation process provides real-time feedback:
 - :material-alert: Error reporting with retry attempts and failure categorization
 - :material-chart-bar: Final statistics including success rates and output file locations
 
+### Token usage
+
+After generation, the CLI shows provider-reported input, output, and total tokens
+for each model. It also saves a usage report beside the dataset: `results.jsonl`
+produces `results.usage.json`. No extra flag is needed.
+
+The report includes individual calls and any usage returned by failed or retried
+requests, including topic generation. Gemini output counts include thinking
+tokens; reasoning and cached-input details are also retained where reported.
+These details are subsets of the totals, so do not add them again.
+
+Missing usage is marked as unknown or incomplete, never estimated. SDK-internal
+retries and direct streaming calls may not expose all usage. Reports cover only
+the current invocation, including when resuming a checkpoint. Use the model's
+applicable pricing to estimate cost; DeepFabric does not calculate a dollar fee.
+
 ## Checkpoint and Resume
 
 For long-running generation jobs, enable checkpointing to save progress and allow resuming after interruptions:

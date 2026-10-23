@@ -35,6 +35,7 @@ from .generator import DataSetGenerator
 from .graph import Graph
 from .llm import VerificationStatus, verify_provider_api_key
 from .llm.prompt_trace import prompt_tracing
+from .llm.token_usage import TokenUsageTracker, track_token_usage
 from .metrics import set_trace_debug, trace
 from .prompt_preview import preview_generation
 from .topic_manager import load_or_build_topic_model, save_topic_model
@@ -763,6 +764,47 @@ def _run_generation(
     )
 
 
+def _report_token_usage(tracker: TokenUsageTracker, output_path: str | None) -> None:
+    """Display a run summary after the live TUI stops, preserving machine-readable counts."""
+    report = tracker.snapshot()
+    if not report["requests"]:
+        return
+    tui = get_tui()
+    for group in report["by_model"]:
+        tokens = group["tokens"]
+        counts = " ".join(
+            f"{label}={tokens[field]:,}" if tokens[field] is not None else f"{label}=unknown"
+            for label, field in (
+                ("input", "input_tokens"),
+                ("output", "output_tokens"),
+                ("total", "total_tokens"),
+            )
+        )
+        partial = " (incomplete)" if not group["complete"] else ""
+        tui.info(f"Token usage • {group['provider']}/{group['model']} • {counts}{partial}")
+        if tokens["reasoning_tokens"] is not None or tokens["cached_input_tokens"] is not None:
+            tui.info(
+                f"  reasoning={tokens['reasoning_tokens'] if tokens['reasoning_tokens'] is not None else 'unknown'} "
+                f"cached_input={tokens['cached_input_tokens'] if tokens['cached_input_tokens'] is not None else 'unknown'} "
+                "(included in output/input counts)"
+            )
+    if not report["complete"]:
+        tui.warning("Token totals are incomplete: some calls did not return full usage metadata.")
+    if output_path is not None:
+        usage_path = Path(output_path).with_suffix(".usage.json")
+        report["scope"] = (
+            "Current CLI invocation only; provider SDK-internal retries may be unobservable."
+        )
+        try:
+            usage_path.write_text(
+                json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+        except OSError as error:
+            tui.warning(f"Could not save token usage: {error}")
+        else:
+            tui.info(f"Token usage saved to {usage_path}")
+
+
 @cli.command()
 @click.argument("config_file", type=click.Path(exists=True), required=False)
 @click.option(
@@ -915,6 +957,9 @@ def generate(  # noqa: PLR0913
             enabled=trace_prompt, path=trace_prompt_file, verbose=verbose, dry_run=dry_run
         )
     )
+    usage_tracker = TokenUsageTracker()
+    click.get_current_context().with_resource(track_token_usage(usage_tracker))
+    usage_output_path = output_save_as
     # Handle deprecated --agent-mode flag
     if agent_mode == "multi_turn":
         click.echo(
@@ -994,6 +1039,11 @@ def generate(  # noqa: PLR0913
 
         preparation = _load_and_prepare_generation_context(options, skip_path_validation=topic_only)
 
+        usage_output_path = (
+            options.topics_save_as or preparation.config.topics.save_as
+            if topic_only
+            else options.output_save_as or preparation.config.output.save_as
+        )
         if dry_run:
             asyncio.run(
                 preview_generation(
@@ -1034,6 +1084,9 @@ def generate(  # noqa: PLR0913
         tui = get_tui()  # type: ignore
         tui.error(f"Unexpected error: {str(e)}")  # type: ignore
         sys.exit(1)
+    finally:
+        if not dry_run:
+            _report_token_usage(usage_tracker, usage_output_path)
 
 
 @cli.command("upload-hf")
