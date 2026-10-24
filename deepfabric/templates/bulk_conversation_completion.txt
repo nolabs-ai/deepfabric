@@ -1,0 +1,11 @@
+Write the assistant's reply according to this system prompt:
+<system_prompt>
+{{ system_prompt }}
+</system_prompt>
+{{ seed_section }}
+{{ output_instructions }}
+{{ subtopics }}
+{{ context_guidance }}
+{{ instructions }}
+{{ examples }}
+{{ tools_section }}

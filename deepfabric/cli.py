@@ -38,6 +38,7 @@ from .llm.prompt_trace import get_prompt_trace, prompt_tracing
 from .llm.token_usage import TokenUsageTracker, track_token_usage
 from .metrics import set_trace_debug, trace
 from .prompt_preview import preview_generation
+from .prompt_templates import template_manifest
 from .run_report import RunReport, file_reference, record_event, reporting
 from .topic_manager import load_or_build_topic_model, save_topic_model
 from .topic_model import TopicModel
@@ -1083,6 +1084,9 @@ def generate(  # noqa: PLR0913
                 resume_requested=resume,
                 num_samples=preparation.num_samples,
                 concurrency=preparation.batch_size,
+                prompt_templates=template_manifest(
+                    params["prompt_templates"], params["prompt_template"]
+                ),
                 settings={
                     key: params.get(key)
                     for key in (

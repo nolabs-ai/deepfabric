@@ -1,0 +1,17 @@
+Write the remainder of one record according to this system prompt:
+<system_prompt>
+{{ system_prompt }}
+</system_prompt>
+
+The pinned seed field is {{ seed_field }}. Its value is:
+<pinned_seed>
+{{ seed }}
+</pinned_seed>
+Return only the other fields, matching the supplied completion schema.
+Do not generate the seed field; its exact value is assembled into the final record in code.
+{{ subtopics }}
+{{ context_guidance }}
+{{ instructions }}
+{{ examples }}
+{{ tools_section }}
+{{ retry_feedback }}

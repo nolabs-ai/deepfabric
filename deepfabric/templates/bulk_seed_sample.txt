@@ -1,0 +1,10 @@
+{{ system_prompt }}
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}
+
+{{ request_instruction }}
+Return an object with an "items" list containing only seed-field values, not whole records.
+Each value must match the supplied item schema and determine a distinct record.
+{{ tools_section }}
+{{ accepted_siblings_section }}

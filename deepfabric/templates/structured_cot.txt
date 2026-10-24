@@ -1,0 +1,7 @@
+Generate a training conversation that demonstrates systematic problem-solving.
+
+Create realistic dialogues where complex problems are solved through methodical reasoning.
+
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}

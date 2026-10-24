@@ -1,11 +1,8 @@
-SEQUENTIAL_SAMPLE_PROMPT = """{system_prompt}
-{instructions}
-{examples}
-{subtopics}
+from string import Template
 
-{tools_section}
-{history_section}{output_instructions}
-"""
+from .prompt_templates import compatibility_template, default_template
+
+SEQUENTIAL_SAMPLE_PROMPT = compatibility_template("sequential_sample", "format")
 
 
 class TreePromptBuilder:
@@ -117,17 +114,12 @@ class TreePromptBuilder:
         path_str = " -> ".join(f'"{topic}"' for topic in topic_path)
         examples = cls._format_examples(cls.EXAMPLES.get(domain, cls.EXAMPLES["general"]))
 
-        return f"""Generate {num_subtopics} subtopics for training data organization.
-
-Task: Create diverse but related subtopics that expand on the given topic path.
-
-Examples:
-{examples}
-
-Context: {system_prompt}
-
-Topic path: {path_str}
-Generate {num_subtopics} subtopics as a Python list. Return only the list, nothing else."""
+        return Template(default_template("tree_expansion")).substitute(
+            num_subtopics=num_subtopics,
+            examples=examples,
+            system_prompt=system_prompt,
+            path_str=path_str,
+        )
 
     @classmethod
     def _format_examples(cls, examples: list) -> str:
@@ -155,104 +147,25 @@ class AgentPromptBuilder:
         for tool in tool_registry.tools:
             tool_signatures.append(f"- {tool.to_signature()}")
 
-        return f"""Generate a realistic agent training example with tool usage reasoning.
-
-Available tools:
-{chr(10).join(tool_signatures)}
-
-You may use 1 to {max_tools_per_query} tools to complete the task.
-
-Focus on WHY each tool is selected and HOW parameters are constructed.
-
-ARGUMENT REQUIREMENTS:
-- All argument values must be concrete and realistic (e.g., owner="acme-corp", repo="web-app", issue_number=42)
-- Never use template placeholders like {{{{owner}}}} or {{{{repo}}}}
-- Never use null values - omit optional parameters entirely if not needed
-- String fields must contain actual content, not empty strings
-
-{{{{{{{{instructions}}}}}}}}
-{{{{{{{{subtopics}}}}}}}}
-
-Generate a complete agent reasoning example using structured output with tool_executions list."""
+        return Template(default_template("agent_tool_context")).substitute(
+            tool_signatures="\n".join(tool_signatures), max_tools_per_query=max_tools_per_query
+        )
 
 
 # Simplified prompts that delegate to structured generation
-AGENT_COT_TOOLS_PROMPT = """Generate an agent tool-calling training example using the available tool definitions.
+AGENT_COT_TOOLS_PROMPT = compatibility_template("agent_cot_tools", "legacy")
 
-You may use multiple tools (up to the specified limit) to complete the task.
+AGENT_COT_HYBRID_PROMPT = compatibility_template("agent_cot_hybrid", "legacy")
 
-Focus on the reasoning process: WHY each tool is selected, HOW parameters are constructed, and WHAT results are expected.
+CUSTOM_SCHEMA_PROMPT = compatibility_template("custom_schema", "legacy")
 
-Create realistic scenarios that teach proper tool reasoning patterns and multi-tool orchestration.
+CONVERSATION_GENERATION_PROMPT = compatibility_template("conversation_generation", "legacy")
 
-{{{{instructions}}}}
-{{{{examples}}}}
-{{{{subtopics}}}}"""
+GRAPH_EXPANSION_PROMPT = compatibility_template("graph_expansion", "raw")
 
-AGENT_COT_HYBRID_PROMPT = """Generate agent tool-calling examples with rich CoT reasoning traces and tool execution.
-
-You may use multiple tools (up to the specified limit) to complete the task.
-
-Combine natural language reasoning with structured step-by-step traces that include:
-- Chain of thought analysis
-- Structured reasoning steps with thoughts and actions
-- Clear tool selection and parameter reasoning
-- Multiple tool executions with results
-
-Focus on teaching both the reasoning process AND multi-tool usage patterns.
-
-{{{{instructions}}}}
-{{{{examples}}}}
-{{{{subtopics}}}}"""
-
-CUSTOM_SCHEMA_PROMPT = """{{{{system_prompt}}}}
-{{{{instructions}}}}
-{{{{examples}}}}
-{{{{subtopics}}}}
-
-Generate a single JSON object for the topic above. Fill in all required fields accurately and completely."""
-
-CONVERSATION_GENERATION_PROMPT = """Generate a training conversation for a language model with this system prompt:
-
-<system_prompt>
-{{{{system_prompt}}}}
-</system_prompt>
-
-Create a realistic single q&a that demonstrates the system's capabilities. The conversation should:
-- Start with a user question/request
-- Have the assistant respond helpfully according to the system prompt
-- Be natural and educational
-
-{{{{instructions}}}}
-{{{{examples}}}}
-{{{{subtopics}}}}
-
-Generate one training sample as question and answer."""
-
-GRAPH_EXPANSION_PROMPT = """
-You are an expert in knowledge graph generation. Your task is to expand a topic into a set of subtopics. For each subtopic, you should also identify if it connects to any other existing topics in the graph.
-
-Here is the current state of the graph:
-{{current_graph_summary}}
-
-You are expanding the topic: "{{current_topic}}"
-
-Generate a list of {{num_subtopics}} subtopics. For each subtopic, provide:
-1. A "topic" string - the name of the new subtopic
-2. A "connections" list of IDs of existing topics it should connect to for creating cross-links (use empty list if no connections)
-"""
-
-GRAPH_EXPANSION_PROMPT_NO_CONNECTIONS = """
-You are an expert in topic generation. Your task is to expand a topic into a set of focused subtopics.
-
-You are expanding the topic: "{{current_topic}}"
-
-Generate a list of {{num_subtopics}} subtopics. For each subtopic, provide:
-1. A "topic" string - the name of the new subtopic
-2. A "connections" list - ALWAYS use an empty list []
-
-IMPORTANT: Do NOT create cross-connections between topics. Each subtopic should be independent and directly related only to its parent topic. Always return connections as an empty list [].
-"""
+GRAPH_EXPANSION_PROMPT_NO_CONNECTIONS = compatibility_template(
+    "graph_expansion_prompt_no_connections", "raw"
+)
 
 
 class GraphPromptBuilder:
@@ -337,22 +250,12 @@ class GraphPromptBuilder:
         path_str = " -> ".join(f'"{topic}"' for topic in topic_path)
         examples = cls._format_examples(cls.EXAMPLES.get(domain, cls.EXAMPLES["technical"]))
 
-        return f"""Generate {num_subtopics} subtopics for training data organization.
-
-Task: Create diverse but related subtopics that expand on the given topic path.
-
-Examples:
-{examples}
-
-Context: {system_prompt}
-
-Topic path: {path_str}
-
-Generate {num_subtopics} subtopics. For each subtopic, provide:
-1. A "topic" string - a specific, concrete subtopic directly related to the parent
-2. A "connections" list - ALWAYS use an empty list []
-
-Return focused subtopics that stay on-topic with the path above."""
+        return Template(default_template("graph_anchored")).substitute(
+            num_subtopics=num_subtopics,
+            examples=examples,
+            system_prompt=system_prompt,
+            path_str=path_str,
+        )
 
     @classmethod
     def _format_examples(cls, examples: list) -> str:
@@ -379,97 +282,23 @@ Return focused subtopics that stay on-topic with the path above."""
 
 
 # Chain of Thought prompts for reasoning-based dataset generation
-FREETEXT_COT_PROMPT = """Generate a reasoning problem that requires analytical thinking to solve.
+FREETEXT_COT_PROMPT = compatibility_template("freetext_cot", "legacy")
 
-Create problems involving mathematics, logic, science, or analytical reasoning that can be solved through clear thinking steps.
+STRUCTURED_COT_PROMPT = compatibility_template("structured_cot", "legacy")
 
-{{{{instructions}}}}
-{{{{examples}}}}
-{{{{subtopics}}}}"""
-
-STRUCTURED_COT_PROMPT = """Generate a training conversation that demonstrates systematic problem-solving.
-
-Create realistic dialogues where complex problems are solved through methodical reasoning.
-
-{{{{instructions}}}}
-{{{{examples}}}}
-{{{{subtopics}}}}"""
-
-HYBRID_COT_PROMPT = """Generate problems that require analytical and systematic thinking.
-
-Create challenging reasoning problems suitable for training systematic problem-solving skills.
-
-{{{{instructions}}}}
-{{{{examples}}}}
-{{{{subtopics}}}}"""
+HYBRID_COT_PROMPT = compatibility_template("hybrid_cot", "legacy")
 
 
-BULK_FULL_SAMPLE_PROMPT = """{system_prompt}
-{instructions}
-{examples}
-{subtopics}
-
-{request_instruction}
-Return an object with an "items" list containing the records. Each record must match
-the supplied item schema. Fill every required field accurately and completely.
-{record_instructions}
-{accepted_siblings_section}
-"""
+BULK_FULL_SAMPLE_PROMPT = compatibility_template("bulk_full_sample", "format")
 
 
-BULK_SEED_SAMPLE_PROMPT = """{system_prompt}
-{instructions}
-{examples}
-{subtopics}
+BULK_SEED_SAMPLE_PROMPT = compatibility_template("bulk_seed_sample", "format")
 
-{request_instruction}
-Return an object with an "items" list containing only seed-field values, not whole records.
-Each value must match the supplied item schema and determine a distinct record.
-{tools_section}
-{accepted_siblings_section}
-"""
-
-BULK_COMPLETION_PROMPT = """Write the remainder of one record according to this system prompt:
-<system_prompt>
-{system_prompt}
-</system_prompt>
-
-The pinned seed field is {seed_field}. Its value is:
-<pinned_seed>
-{seed}
-</pinned_seed>
-Return only the other fields, matching the supplied completion schema.
-Do not generate the seed field; its exact value is assembled into the final record in code.
-{subtopics}
-{context_guidance}
-{instructions}
-{examples}
-{tools_section}
-{retry_feedback}
-"""
+BULK_COMPLETION_PROMPT = compatibility_template("bulk_completion", "format")
 
 
-BULK_CONVERSATION_SEED_PROMPT = """{system_prompt}
-{instructions}
-{examples}
-{subtopics}
+BULK_CONVERSATION_SEED_PROMPT = compatibility_template("bulk_conversation_seed", "format")
 
-{request_instruction}
-Return an object with an "items" list of strings containing only the user requests.
-Do not generate assistant replies or whole conversations.
-{tools_section}
-{accepted_siblings_section}
-"""
-
-BULK_CONVERSATION_COMPLETION_PROMPT = """Write the assistant's reply according to this system prompt:
-<system_prompt>
-{system_prompt}
-</system_prompt>
-{seed_section}
-{output_instructions}
-{subtopics}
-{context_guidance}
-{instructions}
-{examples}
-{tools_section}
-"""
+BULK_CONVERSATION_COMPLETION_PROMPT = compatibility_template(
+    "bulk_conversation_completion", "format"
+)

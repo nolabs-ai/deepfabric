@@ -1,0 +1,2 @@
+Return an object with an "items" list of strings containing only the user requests.
+Do not generate assistant replies or whole conversations.

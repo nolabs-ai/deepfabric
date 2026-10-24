@@ -148,6 +148,10 @@ Controls sample generation.
 | `output_schema` | object | - | Custom JSON Schema for structured output (see below) |
 | `llm` | object | - | Override shared LLM settings |
 
+Override sample framing with `generation.prompt_templates.full_sample`, `.sequential_later`,
+`.seed`, or `.completion`, using inline text or `{file: path}`. See [Prompt Templates](prompt-templates.md)
+for placeholders, per-step selection and reproducible prompt experiments.
+
 #### generation.output_schema (Custom Structured Output)
 
 By default, DeepFabric generates samples in a conversation format (`basic` or `cot`, made up of messages). Setting `output_schema` bypasses the conversation format entirely: DeepFabric generates directly into your JSON Schema via constrained decoding, and each output record matches that schema instead of the OpenAI messages format.

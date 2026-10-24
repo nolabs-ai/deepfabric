@@ -4,7 +4,9 @@ import warnings
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from .prompt_templates import GenerationPromptTemplates, validate_template
 
 
 class TopicSamplingConfig(BaseModel):
@@ -14,6 +16,20 @@ class TopicSamplingConfig(BaseModel):
     shared_scope: Literal["seed", "full"] = "seed"
     seed_field: str | None = Field(default=None, min_length=1)
     completion_includes_topic_path: bool = False
+    prompt_templates: GenerationPromptTemplates = Field(default_factory=GenerationPromptTemplates)
+    prompt_template: str | None = Field(
+        default=None, description="Shorthand for the full_sample template"
+    )
+
+    @model_validator(mode="after")
+    def validate_prompt_overrides(self):
+        if self.prompt_template is not None:
+            if self.prompt_templates.full_sample is not None:
+                raise ValueError(
+                    "Use either prompt_template or prompt_templates.full_sample, not both"
+                )
+            validate_template(self.prompt_template, "full_sample")
+        return self
 
     def validate_topic_sampling(self, output_schema: dict | None, *, has_tools: bool) -> None:
         """Validate options without changing existing independent-generation defaults."""

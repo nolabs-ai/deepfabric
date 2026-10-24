@@ -1,5 +1,6 @@
 import warnings
 
+from pathlib import Path
 from typing import Literal
 
 import yaml
@@ -561,7 +562,9 @@ See documentation for full examples.
             raise ConfigurationError(cls._get_migration_message())
 
         try:
-            config = cls(**config_dict)
+            config = cls.model_validate(
+                config_dict, context={"config_dir": Path(yaml_path).resolve().parent}
+            )
             trace(
                 "config_loaded",
                 {
@@ -677,6 +680,8 @@ See documentation for full examples.
 
         params["topic_sample_mode"] = self.generation.topic_sample_mode
         params["seed_field"] = self.generation.seed_field
+        params["prompt_templates"] = self.generation.prompt_templates
+        params["prompt_template"] = self.generation.prompt_template
         for name in ("shared_scope", "completion_includes_topic_path"):
             if name in self.generation.model_fields_set:
                 params[name] = getattr(self.generation, name)

@@ -1,0 +1,10 @@
+{{ system_prompt }}
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}
+
+{{ request_instruction }}
+Return an object with an "items" list containing the records. Each record must match
+the supplied item schema. Fill every required field accurately and completely.
+{{ record_instructions }}
+{{ accepted_siblings_section }}

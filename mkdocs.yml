@@ -12,6 +12,7 @@ nav:
     - Reasoning Datasets: dataset-generation/reasoning.md
     - Agent Datasets: dataset-generation/agent.md
     - Configuration: dataset-generation/configuration.md
+    - Prompt Templates: dataset-generation/prompt-templates.md
     - Rate Limiting: dataset-generation/rate-limiting.md
   - Tools:
     - tools/index.md
@@ -131,4 +132,3 @@ extra:
       link: https://github.com/nolabs-ai/deepfabric
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/deepfabric/
-

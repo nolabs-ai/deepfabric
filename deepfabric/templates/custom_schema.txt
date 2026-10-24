@@ -1,0 +1,6 @@
+{{ system_prompt }}
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}
+
+Generate a single JSON object for the topic above. Fill in all required fields accurately and completely.

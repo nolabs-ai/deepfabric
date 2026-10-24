@@ -1,0 +1,10 @@
+{{ system_prompt }}
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}
+
+{{ request_instruction }}
+Return an object with an "items" list of strings containing only the user requests.
+Do not generate assistant replies or whole conversations.
+{{ tools_section }}
+{{ accepted_siblings_section }}

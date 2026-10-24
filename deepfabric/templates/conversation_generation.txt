@@ -1,0 +1,16 @@
+Generate a training conversation for a language model with this system prompt:
+
+<system_prompt>
+{{ system_prompt }}
+</system_prompt>
+
+Create a realistic single q&a that demonstrates the system's capabilities. The conversation should:
+- Start with a user question/request
+- Have the assistant respond helpfully according to the system prompt
+- Be natural and educational
+
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}
+
+Generate one training sample as question and answer.

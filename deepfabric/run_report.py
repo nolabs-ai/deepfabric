@@ -63,7 +63,8 @@ class RunReport:
         # Distinguish edited checkouts even when the installed version is unchanged.
         source_hash = hashlib.sha256()
         root = Path(__file__).parent
-        for source in sorted(root.rglob("*.py")):
+        sources = list(root.rglob("*.py")) + list((root / "templates").glob("*.txt"))
+        for source in sorted(sources):
             source_hash.update(str(source.relative_to(root)).encode())
             source_hash.update(b"\0")
             source_hash.update(source.read_bytes())

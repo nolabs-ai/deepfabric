@@ -200,7 +200,11 @@ deepfabric generate config.yaml \
 
 ## Prompt Tracing and Dry Runs
 
-Save the prompts used during generation with `--trace-prompt`:
+DeepFabric builds prompts from default templates using your configuration and
+topic context.
+
+Use `--trace-prompt` to save the prompts used during topic graph/tree generation,
+expansion, and sample generation:
 
 ```bash
 deepfabric generate config.yaml --trace-prompt
@@ -226,6 +230,9 @@ deepfabric generate config.yaml --trace-prompt --trace-prompt-file ./inspect.jso
 
 Traces are appended to the JSONL file without interrupting the 
 progress display. The parent directory must already exist.
+
+To change sample-generation templates, supply your own inline text or template
+files in YAML. See [generation prompt templates](../dataset-generation/prompt-templates.md).
 
 ### Preview without generating data
 

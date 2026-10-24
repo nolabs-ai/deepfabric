@@ -1,0 +1,2 @@
+Return only the other fields, matching the supplied completion schema.
+Do not generate the seed field; its exact value is assembled into the final record in code.

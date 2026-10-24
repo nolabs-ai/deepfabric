@@ -247,7 +247,7 @@ async def preview_generation(
     for later in [False, True] if session.verbose else [False]:
         if engine.config.topic_sample_mode == "sequential":
             prompt = engine._build_sequential_prompt(
-                allocation, ["{{{previous successful samples}}}"] if later else [], 0
+                allocation, ["{{{previous successful samples}}}"] if later else [], 0, later=later
             )
         else:
             prompt = engine.build_prompt(engine._get_prompt_template(), 0, [TOPIC_PATH])
