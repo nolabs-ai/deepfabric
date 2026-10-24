@@ -97,11 +97,8 @@ def prompt_of(call):
 
 
 def history(prompt):
-    return json.loads(
-        re.search(
-            r'<prior_successes scope="\w+">(.*?)</prior_successes>', prompt, flags=re.S
-        ).group(1)
-    )
+    match = re.search(r'<prior_successes scope="\w+">(.*?)</prior_successes>', prompt, flags=re.S)
+    return json.loads(match.group(1)) if match else []
 
 
 @pytest.mark.parametrize("kind", ["basic", "cot", "custom"])
@@ -136,9 +133,9 @@ async def test_public_modes_generate_whole_samples_with_successful_history(
         else:
             assert [row["messages"][int(shipping)]["content"] for row in prior] == ["B", "A"]
     for prompt in prompts:
-        for text in ("ROOT_PATH", "MY_INSTRUCTIONS", "MY_EXAMPLE", "OUTPUT_PERSONA"):
+        for text in ("ROOT_PATH", "MY_INSTRUCTIONS", "MY_EXAMPLE", "GENERATION_PERSONA"):
             assert text in prompt
-        assert "GENERATION_PERSONA" not in prompt
+    assert "OUTPUT_PERSONA" not in prompts[0]
     if kind != "custom":
         for row, seed in zip(dataset, ["A", "B", "C"], strict=True):
             assert row["messages"][int(shipping)]["content"] == seed
@@ -356,7 +353,7 @@ async def test_agent_generates_new_questions_and_receives_history_in_every_stage
         prompt = prompt_of(call)
         assert "First generated user request" in prompt
         for text in (
-            "OUTPUT_PERSONA",
+            "GENERATION_PERSONA",
             "MY_INSTRUCTIONS",
             "MY_EXAMPLE",
             "LOOKUP_CATALOG",

@@ -65,7 +65,7 @@ class ResourceProbe:
             await asyncio.sleep(0)
             properties = schema.model_json_schema()["properties"]
             if "items" in properties:
-                count = int(re.search(r"Generate (\d+) diverse", prompt).group(1))
+                count = int(re.search(r"Generate (\d+) ", prompt).group(1))
                 start = self.issued[topic]
                 self.issued[topic] += count
                 items = [f"{topic} item-{i}" for i in range(start, start + count)]

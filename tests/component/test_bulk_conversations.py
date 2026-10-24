@@ -103,7 +103,7 @@ async def test_full_conversations_keep_reasoning_persona_and_slot_identities(mak
     assert events[-1]["unaccounted"] == 0
     prompt = engine.llm_client.generate_async.call_args.args[0]
     assert "Root requirements -> Child" in prompt
-    assert "Dataset persona" in prompt and "Generation persona" not in prompt
+    assert "Generation persona" in prompt and "Dataset persona" not in prompt
     assert "Do not generate system messages" in prompt
     if cot:
         assert "reasoning trace" in prompt and "freetext" in prompt

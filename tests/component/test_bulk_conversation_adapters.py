@@ -209,7 +209,7 @@ async def test_nested_collection_adapter_round_trip(
     for body in sent:
         if provider == "gemini":
             assert body["config"].max_output_tokens == 6000
-            assert body["contents"].startswith("Generate")
+            assert body["contents"].startswith(engine.generation_prompt)
         else:
             assert body["max_tokens"] == 6000
             assert body["messages"][0]["role"] == "user"

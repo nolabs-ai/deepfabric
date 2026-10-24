@@ -71,13 +71,8 @@ async def test_all_scopes_warn_once_per_run_count_topics_and_keep_history(
         attempts[topic] += 1
         if attempts[topic] == 1:
             raise ValueError("validation error: injected retry")
-        histories[topic].append(
-            json.loads(
-                re.search(
-                    r'<prior_successes scope="\w+">(.*?)</prior_successes>', prompt, re.S
-                ).group(1)
-            )
-        )
+        match = re.search(r'<prior_successes scope="\w+">(.*?)</prior_successes>', prompt, re.S)
+        histories[topic].append(json.loads(match.group(1)) if match else [])
         return response(schema, f"{topic}-question-{attempts[topic]}")
 
     engine.llm_client.generate_async = AsyncMock(side_effect=generate)
@@ -128,13 +123,8 @@ async def test_default_threshold_detects_growing_history_without_trimming(
     histories = []
 
     async def generate(prompt, schema, **kwargs):
-        histories.append(
-            json.loads(
-                re.search(
-                    r'<prior_successes scope="\w+">(.*?)</prior_successes>', prompt, re.S
-                ).group(1)
-            )
-        )
+        match = re.search(r'<prior_successes scope="\w+">(.*?)</prior_successes>', prompt, re.S)
+        histories.append(json.loads(match.group(1)) if match else [])
         return response(schema, "PRIVATE_SAMPLE_" + "x" * 10_000)
 
     engine.llm_client.generate_async = AsyncMock(side_effect=generate)

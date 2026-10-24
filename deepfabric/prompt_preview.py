@@ -14,12 +14,13 @@ from .bulk import (
     seed_value_schema,
 )
 from .config import DeepFabricConfig
+from .dataset_manager import resolve_num_samples
 from .generator import DataSetGenerator
 from .graph import Graph
 from .llm.prompt_trace import PromptPreviewCaptured, get_prompt_trace
-from .prompts import SEQUENTIAL_SAMPLE_PROMPT
 from .schemas import AgentStep, ChatMessage, ToolExecution
 from .tree import Tree
+from .utils import read_topic_tree_from_jsonl
 
 TOPIC_PATH = "{{{topic path}}}"
 USER_REQUEST = "{{{user request}}}"
@@ -91,13 +92,42 @@ async def _preview_builder(engine: DataSetGenerator, prompt: str, *, pinned: boo
     await _capture(builder._generate_agent_conclusion(user, [step], [result]))
 
 
+def _preview_bulk_allocation(config, engine, topics_overrides, topics_load, num_samples):
+    """Resolve real quotas from loaded topics, without generating any topics."""
+    if not topics_load:
+        print("Bulk quota is unknown until topics are generated; showing a count placeholder.")
+        return {
+            "uuid": "preview",
+            "path": [TOPIC_PATH],
+            "quota": "{{{samples requested for this topic}}}",
+        }
+    params = config.get_topics_params(**topics_overrides)
+    if config.topics.mode == "graph":
+        topics = Graph.from_json(topics_load, params)
+    else:
+        topics = Tree(**params)
+        topics.from_dict_list(read_topic_tree_from_jsonl(topics_load))
+    total = resolve_num_samples(
+        num_samples if num_samples is not None else config.output.num_samples,
+        len(topics.get_unique_topics()),
+    )
+    plan = engine._prepare_topic_allocations(total, topics)
+    allocation = next(a for a in plan["allocations"] if a["quota"])
+    quotas = sorted({a["quota"] for a in plan["allocations"]})
+    print(
+        f"Bulk allocation: {total} samples across {plan['unique_topics']} targets; quotas {quotas}. Showing the first selected target ({allocation['quota']} samples)."
+    )
+    return {**allocation, "path": [TOPIC_PATH]}
+
+
 async def preview_generation(
     config: DeepFabricConfig,
     *,
     topics_overrides: dict,
     generation_overrides: dict,
     topic_only: bool = False,
-    topics_load: bool = False,
+    topics_load: str | None = None,
+    num_samples: int | str | None = None,
 ) -> None:
     """Show representative first/later cases using configured production builders.
 
@@ -140,18 +170,37 @@ async def preview_generation(
     engine = DataSetGenerator(
         **_offline_generation_params(config.get_generation_params(**generation_overrides))
     )
-    allocation = {"uuid": "preview", "path": [TOPIC_PATH], "quota": 2}
+    allocation = {"uuid": "preview", "path": [TOPIC_PATH]}
     if engine.config.topic_sample_mode == "bulk":
+        allocation = _preview_bulk_allocation(
+            config, engine, topics_overrides, topics_load, num_samples
+        )
         item_schema = (
             seed_value_schema(engine.config.output_schema, engine.config.seed_field)
             if engine.config.output_schema is not None
             else {"type": "string", "minLength": 1}
         )
         for later in [False, True] if session.verbose else [False]:
+            accepted = []
+            if later:
+                if isinstance(allocation["quota"], int):
+                    accepted = [
+                        f"{{{{{{previous accepted seed {i + 1}}}}}}}"
+                        for i in range(allocation["quota"] - 1)
+                    ]
+                else:
+                    accepted = ["{{{previous accepted seed}}}"]
+            print(
+                "Bulk collection preview: one missing item after a partial response."
+                if accepted
+                else "Bulk collection preview: retry after an invalid response."
+                if later
+                else "Bulk collection preview: initial request."
+            )
             prompt = engine._build_bulk_collection_prompt(
                 allocation,
                 1 if later else allocation["quota"],
-                ["{{{previous accepted seed}}}"] if later else [],
+                accepted,
                 0,
             )
             await _capture(
@@ -182,19 +231,8 @@ async def preview_generation(
 
     for later in [False, True] if session.verbose else [False]:
         if engine.config.topic_sample_mode == "sequential":
-            prompt = SEQUENTIAL_SAMPLE_PROMPT.format(
-                system_prompt=engine.dataset_system_prompt,
-                topic_path=TOPIC_PATH,
-                instructions=engine.build_custom_instructions_text(),
-                examples=engine.build_examples_text(0),
-                tools=engine.build_tools_text(),
-                scope=engine.config.shared_scope,
-                history="{{{previous successful samples}}}" if later else "[]",
-                output_instructions=(
-                    "Generate a complete tool-using conversation with a user request, tool executions, and a final assistant reply."
-                    if engine.tool_registry and engine.config.output_schema is None
-                    else engine._bulk_record_instructions()
-                ),
+            prompt = engine._build_sequential_prompt(
+                allocation, ["{{{previous successful samples}}}"] if later else [], 0
             )
         else:
             prompt = engine.build_prompt(engine._get_prompt_template(), 0, [TOPIC_PATH])

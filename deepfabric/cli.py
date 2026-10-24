@@ -1105,7 +1105,8 @@ def generate(  # noqa: PLR0913
                     topics_overrides=preparation.topics_overrides,
                     generation_overrides=preparation.generation_overrides,
                     topic_only=topic_only,
-                    topics_load=bool(topics_load),
+                    topics_load=options.topics_load,
+                    num_samples=preparation.num_samples,
                 )
             )
             return

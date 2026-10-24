@@ -105,7 +105,7 @@ async def test_full_quota_records_flatten_with_stable_slots(make_engine):
     call = engine.llm_client.generate_async.call_args
     prompt, model = call.args
     assert "Generate 3" in prompt
-    assert "Dataset persona" in prompt and "Generation persona" not in prompt
+    assert "Generation persona" in prompt and "Dataset persona" not in prompt
     assert "Root specification -> topic-0" in prompt and "Use concrete values" in prompt
     assert model.model_json_schema()["properties"]["items"]["items"] == SCHEMA
     assert call.kwargs["max_tokens"] == 1234

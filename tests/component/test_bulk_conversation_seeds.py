@@ -68,7 +68,7 @@ async def test_prompt_matrix_and_exact_pin(make_engine, kind, persona, path, shi
     seed_prompt, _ = unpack(engine.llm_client.generate_async.call_args_list[0])
     completion_prompt, model = unpack(engine.llm_client.generate_async.call_args_list[1])
     assert "PRIVATE_ROOT" in seed_prompt
-    assert "GENERATION_PERSONA" not in seed_prompt and "OUTPUT_PERSONA" not in seed_prompt
+    assert "GENERATION_PERSONA" in seed_prompt and "OUTPUT_PERSONA" not in seed_prompt
     assert ("PRIVATE_ROOT" in completion_prompt) is path
     assert resolved in completion_prompt
     assert set(model.model_json_schema()["properties"]) == (

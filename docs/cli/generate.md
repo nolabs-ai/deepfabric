@@ -233,6 +233,11 @@ Values that depend on earlier steps use placeholders such as `{{{topic path}}}`
 and `{{{tool result}}}`. Add `--verbose` to preview representative later cases,
 or `--trace-prompt` to also save the previews to a file.
 
+With `--topics-load`, bulk previews calculate the collection count from the loaded
+topics and requested sample count. Otherwise, the count remains a placeholder.
+Later collection previews show a retry, including accepted seeds only when a
+previous response was partially successful.
+
 ## Progress Monitoring
 
 The generation process provides real-time feedback:

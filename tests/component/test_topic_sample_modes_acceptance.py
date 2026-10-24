@@ -448,13 +448,9 @@ async def test_cross_mode_new_invocation_has_no_previous_sibling_context(make_en
     assert events[0]["outstanding_slots"] == 3
     first_prompt = provider.calls[0][2]
     if case[0].startswith("sequential"):
-        value = re.search(
-            r'<prior_successes scope="\w+">(.*?)</prior_successes>', first_prompt, re.S
-        )
-        assert json.loads(value.group(1)) == []
+        assert "<prior_successes" not in first_prompt
     elif case[0].startswith("bulk"):
-        value = re.search(r"<accepted_siblings>(.*?)</accepted_siblings>", first_prompt, re.S)
-        assert json.loads(value.group(1)) == []
+        assert "<accepted_siblings>" not in first_prompt
     else:
         assert "<prior_successes" not in first_prompt and "<accepted_siblings>" not in first_prompt
 

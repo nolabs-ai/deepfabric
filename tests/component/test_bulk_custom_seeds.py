@@ -96,7 +96,7 @@ async def test_public_seed_mode_pins_values_with_narrower_completion_schema(make
     calls = engine.llm_client.generate_async.call_args_list
     seed_prompt = calls[0].args[0]
     assert "PRIVATE_ROOT_REQUIREMENTS -> topic-0" in seed_prompt
-    assert "GENERATION_PERSONA" not in seed_prompt and "DATASET_PERSONA" not in seed_prompt
+    assert "GENERATION_PERSONA" in seed_prompt and "DATASET_PERSONA" not in seed_prompt
     assert "Use concrete values" in seed_prompt
     for call in calls[1:]:
         prompt, model = call.args
