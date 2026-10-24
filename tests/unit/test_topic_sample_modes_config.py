@@ -53,7 +53,6 @@ def test_coordinated_seed_schema(make_config, mode):
         ({"topic_sample_mode": "sequential", "output_schema": SCHEMA}, "requires seed_field"),
         ({"shared_scope": "seed"}, "explicitly set"),
         ({"shared_scope": "full"}, "explicitly set"),
-        ({"topic_sample_mode": "bulk", "shared_scope": "full"}, "truncation fix"),
         ({"completion_includes_topic_path": True}, "requires bulk"),
         ({"completion_includes_topic_path": False}, "requires bulk"),
         (
@@ -67,6 +66,13 @@ def test_coordinated_seed_schema(make_config, mode):
 def test_invalid_combinations(make_config, options, error):
     with pytest.raises(ValueError, match=error):
         make_config(**options)
+
+
+@pytest.mark.parametrize("mode", ["bulk", "sequential"])
+@pytest.mark.parametrize("schema", [None, SCHEMA])
+def test_full_scope_needs_no_seed_field(make_config, mode, schema):
+    config = make_config(topic_sample_mode=mode, shared_scope="full", output_schema=schema)
+    assert config.shared_scope == "full" and config.seed_field is None
 
 
 def test_tools_full_collection_has_actionable_error():
@@ -108,6 +114,7 @@ def yaml_config(**generation):
     [
         {},
         {"topic_sample_mode": "bulk"},
+        {"topic_sample_mode": "bulk", "shared_scope": "full"},
         {"topic_sample_mode": "sequential", "shared_scope": "full"},
     ],
 )

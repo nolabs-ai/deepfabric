@@ -1544,7 +1544,7 @@ class DataSetGenerator:
         )
 
     def _supports_bulk_full_records(self) -> bool:
-        """Internal execution capability; configuration still gates full scope."""
+        """Full-record bulk execution supports non-tool generation."""
         return (
             self.config.topic_sample_mode == "bulk"
             and self.config.shared_scope == "full"

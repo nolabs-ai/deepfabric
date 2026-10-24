@@ -86,6 +86,37 @@ def test_preview_uses_production_composition_without_provider_calls(
     assert not (tmp_path / "dataset.jsonl").exists()
 
 
+@pytest.mark.parametrize("custom", [False, True])
+def test_bulk_full_preview_uses_complete_record_schema(
+    tmp_path, config_data, offline_guard, custom
+):
+    config_data["generation"].update(topic_sample_mode="bulk", shared_scope="full")
+    if custom:
+        config_data["generation"]["output_schema"] = {
+            "type": "object",
+            "properties": {"command": {"type": "string"}, "risk": {"type": "string"}},
+            "required": ["command", "risk"],
+        }
+    trace_file = tmp_path / "full-preview.jsonl"
+    result = run_preview(
+        tmp_path, config_data, "--trace-prompt", "--verbose", "--trace-prompt-file", str(trace_file)
+    )
+    assert result.exit_code == 0, result.output
+    records = [json.loads(line) for line in trace_file.read_text().splitlines()]
+    collections = [
+        record for record in records if "items" in record["schema"].get("properties", {})
+    ]
+    assert len(collections) == 2
+    fields = collections[0]["schema"]["properties"]["items"]["items"]["properties"]
+    assert ("command" in fields and "risk" in fields) if custom else "messages" in fields
+    assert "pinned_seed" not in result.output
+    assert (
+        "previous accepted command" in collections[1]["prompt"]
+        if custom
+        else "previous accepted messages" in collections[1]["prompt"]
+    )
+
+
 def test_agent_preview_includes_all_stages_and_remote_placeholders(
     tmp_path, config_data, offline_guard
 ):

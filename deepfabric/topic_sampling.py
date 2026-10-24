@@ -33,10 +33,8 @@ class TopicSamplingConfig(BaseModel):
             and self.seed_field is None
         ):
             raise ValueError("shared_scope: seed with output_schema requires seed_field")
-        if self.topic_sample_mode == "bulk" and self.shared_scope == "full":
-            if has_tools:
-                raise ValueError("The agent builder cannot produce a collection in one call")
-            raise ValueError("bulk with shared_scope: full requires the truncation fix")
+        if self.topic_sample_mode == "bulk" and self.shared_scope == "full" and has_tools:
+            raise ValueError("The agent builder cannot produce a collection in one call")
         if "completion_includes_topic_path" in self.model_fields_set and not (
             self.topic_sample_mode == "bulk" and self.shared_scope == "seed"
         ):

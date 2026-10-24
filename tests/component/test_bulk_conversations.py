@@ -41,7 +41,7 @@ def make_engine(tmp_path):
         params.update(options)
         with patch("deepfabric.generator.LLMClient"):
             engine = DataSetGenerator(**params)
-        # No public bypass: the separate truncation fix still gates full-scope config.
+        # Set up full-record collection.
         engine.config = engine.config.model_copy(
             update={"topic_sample_mode": "bulk", "shared_scope": "full"}
         )
@@ -313,9 +313,9 @@ async def test_quota_aware_token_warning_never_scales_budget(
 
 
 @pytest.mark.parametrize("output_schema", [None, {"type": "object"}])
-def test_public_full_scope_is_still_gated(output_schema):
-    with pytest.raises(DataSetGeneratorError, match="requires the truncation fix"):
-        DataSetGenerator(
+def test_public_full_scope_accepts_non_tool_configs(output_schema):
+    with patch("deepfabric.generator.LLMClient"):
+        engine = DataSetGenerator(
             generation_system_prompt="Persona",
             provider="openai",
             model_name="test",
@@ -323,6 +323,7 @@ def test_public_full_scope_is_still_gated(output_schema):
             topic_sample_mode="bulk",
             shared_scope="full",
         )
+    assert engine._supports_bulk_full_records()
 
 
 async def test_token_warning_uses_remaining_quota_on_resume(make_engine, caplog):

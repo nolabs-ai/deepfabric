@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from deepfabric.exceptions import DataSetGeneratorError
 from deepfabric.generator import DataSetGenerator
 from deepfabric.llm.client import LLMClient
 from deepfabric.sampling import topic_plan
@@ -54,7 +53,7 @@ def make_engine(tmp_path):
         params.update(options)
         with patch("deepfabric.generator.LLMClient"):
             engine = DataSetGenerator(**params)
-        # The truncation gate remains intact. Exercise the internal capability only.
+        # Exercise the full-record collection implementation.
         engine.config = engine.config.model_copy(
             update={"topic_sample_mode": "bulk", "shared_scope": "full"}
         )
@@ -307,9 +306,9 @@ async def test_topics_share_global_limit_and_fixed_group_barrier(make_engine):
     assert len(engine._completed) == 6
 
 
-async def test_public_full_scope_remains_gated():
-    with pytest.raises(DataSetGeneratorError, match="requires the truncation fix"):
-        DataSetGenerator(
+async def test_public_full_scope_generates_records():
+    with patch("deepfabric.generator.LLMClient"):
+        engine = DataSetGenerator(
             generation_system_prompt="Persona",
             provider="openai",
             model_name="test",
@@ -317,6 +316,10 @@ async def test_public_full_scope_remains_gated():
             topic_sample_mode="bulk",
             shared_scope="full",
         )
+    responses(engine, [row("A"), row("B")])
+    _, dataset = await run(engine, 2)
+    assert len(dataset) == 2
+    assert engine.llm_client.generate_async.await_count == 1
 
 
 async def test_empty_responses_consume_the_same_bounded_budget(make_engine):

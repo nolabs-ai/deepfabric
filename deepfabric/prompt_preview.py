@@ -18,7 +18,7 @@ from .dataset_manager import resolve_num_samples
 from .generator import DataSetGenerator
 from .graph import Graph
 from .llm.prompt_trace import PromptPreviewCaptured, get_prompt_trace
-from .schemas import AgentStep, ChatMessage, ToolExecution
+from .schemas import AgentStep, ChatMessage, Conversation, ToolExecution
 from .tree import Tree
 from .utils import read_topic_tree_from_jsonl
 
@@ -175,10 +175,17 @@ async def preview_generation(
         allocation = _preview_bulk_allocation(
             config, engine, topics_overrides, topics_load, num_samples
         )
+        seed_scope = engine.config.shared_scope == "seed"
         item_schema = (
-            seed_value_schema(engine.config.output_schema, engine.config.seed_field)
+            (
+                seed_value_schema(engine.config.output_schema, engine.config.seed_field)
+                if engine.config.output_schema is not None
+                else {"type": "string", "minLength": 1}
+            )
+            if seed_scope
+            else engine.config.output_schema
             if engine.config.output_schema is not None
-            else {"type": "string", "minLength": 1}
+            else Conversation.model_json_schema()
         )
         for later in [False, True] if session.verbose else [False]:
             accepted = []
@@ -190,6 +197,14 @@ async def preview_generation(
                     ]
                 else:
                     accepted = ["{{{previous accepted seed}}}"]
+                if not seed_scope:
+                    accepted = [
+                        {
+                            field: f"{{{{{{previous accepted {field}}}}}}}"
+                            for field in item_schema.get("properties", {})
+                        }
+                        for _ in accepted
+                    ]
             print(
                 "Bulk collection preview: one missing item after a partial response."
                 if accepted

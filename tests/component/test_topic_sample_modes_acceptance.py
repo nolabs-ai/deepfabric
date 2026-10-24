@@ -1,6 +1,6 @@
 """Offline component acceptance using real schedulers/builders and mocked external I/O.
 
-Bulk full scope is exercised internally; its public truncation gate stays intact.
+Bulk full scope includes the non-tool record and conversation paths.
 """
 # ruff: noqa: PLR2004, ARG001
 
@@ -574,25 +574,29 @@ def test_cross_mode_sync_entrypoints(make_engine, mode, with_events):
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_public_bulk_full_gate_remains_in_place_before_client_initialization(kind):
+def test_public_bulk_full_allows_non_tool_modes_and_rejects_agents(kind):
     options = {"conversation_type": "cot" if kind in ("cot", "agent") else "basic"}
     if kind == "custom":
         options["output_schema"] = SCHEMA
     if kind == "agent":
         options["custom_tools"] = [TOOL]
-    with (
-        patch("deepfabric.generator.LLMClient") as client,
-        pytest.raises(DataSetGeneratorError, match="truncation fix|agent builder"),
-    ):
-        DataSetGenerator(
-            generation_system_prompt="Persona",
-            provider="openai",
-            model_name="test",
-            topic_sample_mode="bulk",
-            shared_scope="full",
-            **options,
-        )
-    client.assert_not_called()
+    params = dict(
+        generation_system_prompt="Persona",
+        provider="openai",
+        model_name="test",
+        topic_sample_mode="bulk",
+        shared_scope="full",
+        **options,
+    )
+    with patch("deepfabric.generator.LLMClient") as client:
+        if kind == "agent":
+            with pytest.raises(DataSetGeneratorError, match="agent builder"):
+                DataSetGenerator(**params)
+            client.assert_not_called()
+        else:
+            engine = DataSetGenerator(**params)
+            assert engine._supports_bulk_full_records()
+            client.assert_called_once()
 
 
 @pytest.mark.parametrize("case", CASES)
