@@ -15,6 +15,8 @@ from google import genai
 from google.genai import types as genai_types
 from pydantic import BaseModel
 
+from deepfabric.run_report import response_metrics
+
 from ..exceptions import DataSetGeneratorError
 from .errors import handle_provider_error
 from .prompt_trace import PromptPreviewCaptured, get_prompt_trace
@@ -167,7 +169,7 @@ class LLMClient:
 
         # Generate JSON string using the model
         self._trace_prompt(prompt, schema)
-        with request_token_usage(self.token_usage, self.provider, self.model_name, schema):
+        with request_token_usage(self.token_usage, self.provider, self.model_name, schema, kwargs):
             json_output = self.model(prompt, generation_schema, **kwargs)
 
         # Parse and validate the JSON response with the ORIGINAL schema
@@ -237,7 +239,7 @@ class LLMClient:
 
         # Call the async model (guaranteed non-None by check above)
         self._trace_prompt(prompt, schema)
-        with request_token_usage(self.token_usage, self.provider, self.model_name, schema):
+        with request_token_usage(self.token_usage, self.provider, self.model_name, schema, kwargs):
             json_output = await async_model(prompt, generation_schema, **kwargs)
 
         # Validate with original schema to ensure proper validation
@@ -444,6 +446,12 @@ class GeminiModel:
         )
 
         record_usage("gemini", self.model_name, getattr(response, "usage_metadata", None))
+        candidates = getattr(response, "candidates", None)
+        response_metrics(
+            "gemini",
+            self.model_name,
+            getattr(candidates[0], "finish_reason", None) if candidates else None,
+        )
 
         # Safely check for empty or blocked responses
         # Some SDK versions may return None or have blocked candidates
@@ -530,6 +538,7 @@ class AnthropicModel:
             ) from e
 
         record_usage("anthropic", self.model_name, getattr(response, "usage", None))
+        response_metrics("anthropic", self.model_name, getattr(response, "stop_reason", None))
 
         # Check for refusals
         if response.stop_reason == "refusal":
@@ -1143,6 +1152,10 @@ def _observe_openai_usage(client: Any, provider: str, model: str, *, asynchronou
                 record_usage(provider, model, None, response_received=False)
                 raise
             record_usage(provider, model, getattr(response, "usage", None))
+            choices = getattr(response, "choices", None)
+            response_metrics(
+                provider, model, getattr(choices[0], "finish_reason", None) if choices else None
+            )
             return response
 
         client.chat.completions.create = create_async
@@ -1156,6 +1169,10 @@ def _observe_openai_usage(client: Any, provider: str, model: str, *, asynchronou
                 record_usage(provider, model, None, response_received=False)
                 raise
             record_usage(provider, model, getattr(response, "usage", None))
+            choices = getattr(response, "choices", None)
+            response_metrics(
+                provider, model, getattr(choices[0], "finish_reason", None) if choices else None
+            )
             return response
 
         client.chat.completions.create = create_sync

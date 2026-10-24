@@ -62,6 +62,7 @@ from .prompts import (
     STRUCTURED_COT_PROMPT,
     AgentPromptBuilder,
 )
+from .run_report import generation_scope, record_event
 from .sampling import STEP_TOPIC_ID, resolve_target, topic_plan
 from .schemas import ChatMessage, Conversation, ToolRegistry, get_conversation_schema
 from .stream_simulator import simulate_stream
@@ -932,6 +933,14 @@ class DataSetGenerator:
             max_attempts: Total number of attempts allowed
             error: The error that triggered the retry
         """
+        record_event(
+            "retry",
+            category="sample_validation",
+            sample_idx=sample_idx + 1,
+            attempt=attempt + 1,
+            max_attempts=max_attempts,
+            error_type=type(error).__name__,
+        )
         if self.progress_reporter:
             self.progress_reporter.emit_retry(
                 sample_idx=sample_idx + 1,
@@ -1428,10 +1437,20 @@ class DataSetGenerator:
         self.failure_analysis = {category: [] for category in ERROR_CATEGORIES}
         self._large_sequential_prompt_topics.clear()
         self._generation_plan = plan
+        record_event(
+            "generation_plan",
+            plan=plan,
+            resumed=resuming,
+            resumed_samples=self._flushed_samples_count,
+            resumed_failures=self._flushed_failures_count,
+            completed_slots=[list(slot) for slot in sorted(self._completed)],
+            resumed_output_slots=[list(slot) for slot in self._sample_slots],
+        )
         # Resume is explicit for each invocation; saving a checkpoint does not select resume.
         self._checkpoint_loaded = False
         self._warn_bulk_token_budget(plan)
 
+    @generation_scope
     async def _generate_sample_outcome(
         self,
         prompt: str,
@@ -1443,6 +1462,8 @@ class DataSetGenerator:
         """Generate owned results; only the coordinator mutates persisted sample buffers."""
         error = None
         for attempt in range(self.config.max_retries):
+            if attempt:
+                record_event("retry", category="sample_generation", attempt=attempt + 1)
             try:
                 samples, failures = await self._generate_structured_samples_async(
                     [prompt], include_sys_msg, sample_idx, [topic_path]
@@ -1481,6 +1502,7 @@ class DataSetGenerator:
         await queue.put(("topic_state", (topic_id, seeds, attempts, acknowledged)))
         await acknowledged
 
+    @generation_scope
     async def _generate_topic_samples_async(
         self,
         allocation: dict,
@@ -1754,6 +1776,10 @@ class DataSetGenerator:
                 "attempt": attempts,
                 "budget": budget,
             }
+            if attempts > 1:
+                record_event(
+                    "retry", category="bulk_collection", attempt=attempts, requested=requested
+                )
             await queue.put(("event", {"event": "seed_request", **event}))
             retryable = True
             accepted = 0
@@ -1981,6 +2007,7 @@ class DataSetGenerator:
                     : self.config.max_tools_per_query
                 ]
 
+    @generation_scope
     async def _complete_conversation_seed_outcome(
         self,
         allocation: dict,
@@ -2051,6 +2078,7 @@ class DataSetGenerator:
             "error": error_feedback,
         }
 
+    @generation_scope
     async def _complete_custom_seed_outcome(
         self,
         allocation: dict,
@@ -2152,6 +2180,7 @@ class DataSetGenerator:
                 seeds.append(seed)
         return seeds
 
+    @generation_scope
     async def _generate_sequential_sample_outcome(
         self,
         prompt: str,
@@ -2435,6 +2464,15 @@ class DataSetGenerator:
             identity, sample, failure = payload
             self._completed.add(identity)
             pending_completed.append(identity)
+            record_event(
+                "sample_outcome",
+                topic_id=identity[0],
+                sample_ordinal=identity[1],
+                status="accepted" if sample is not None else "failed",
+                output_row=historical_samples + new_samples + 1 if sample is not None else None,
+                error_type=failure.get("error_type") if failure else None,
+                error=failure.get("error") if failure else None,
+            )
             if sample is not None:
                 self._samples.append(sample)
                 pending_samples.append(sample)
@@ -2586,6 +2624,7 @@ class DataSetGenerator:
                     if kind == "error":
                         raise payload
                     if kind == "event":
+                        record_event("generation_event", details=payload)
                         yield payload
                         continue
                     if kind == "topic_state":
@@ -2640,6 +2679,7 @@ class DataSetGenerator:
                     "total_samples": self._flushed_samples_count,
                     "total_failures": self._flushed_failures_count,
                 }
+            record_event("generation_result", stopped=self.stop_requested, **counts())
             if self.stop_requested:
                 yield {
                     "event": "generation_stopped",

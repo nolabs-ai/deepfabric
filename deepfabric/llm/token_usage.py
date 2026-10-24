@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
+from deepfabric.run_report import metric_fields, request_metrics
+
 _FIELDS = (
     "input_tokens",
     "output_tokens",
@@ -149,11 +151,17 @@ def track_token_usage(tracker: TokenUsageTracker):
 
 
 @contextmanager
-def request_token_usage(tracker: TokenUsageTracker, provider: str, model: str, schema: Any):
+def request_token_usage(
+    tracker: TokenUsageTracker,
+    provider: str,
+    model: str,
+    schema: Any,
+    parameters: dict | None = None,
+):
     """Attribute provider responses to a client and stage without changing its return type."""
     request = _Request(provider, model, getattr(schema, "__name__", None))
     token = _request.set(request)
-    with track_token_usage(tracker):
+    with track_token_usage(tracker), request_metrics(provider, model, schema, parameters or {}):
         try:
             yield
         finally:
@@ -168,6 +176,7 @@ def record_usage(provider: str, model: str, usage: Any, *, response_received: bo
     if request is not None:
         request.reported = True
     record = {
+        **metric_fields(),
         "provider": provider,
         "model": model,
         "stage": request.stage if request is not None else None,

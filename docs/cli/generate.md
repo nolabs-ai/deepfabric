@@ -242,21 +242,29 @@ The generation process provides real-time feedback:
 - :material-alert: Error reporting with retry attempts and failure categorization
 - :material-chart-bar: Final statistics including success rates and output file locations
 
-### Token usage
+### Token usage and run reports
 
-After generation, the CLI shows provider-reported input, output, and total tokens
-for each model. It also saves a usage report beside the dataset: `results.jsonl`
-produces `results.usage.json`. No extra flag is needed.
+DeepFabric prints exact input, output and total token counts after generation.
+Missing usage is marked as unknown or incomplete. No metrics file is created by default.
 
-The report includes individual calls and any usage returned by failed or retried
-requests, including topic generation. Gemini output counts include thinking
-tokens; reasoning and cached-input details are also retained where reported.
-These details are subsets of the totals, so do not add them again.
+Use `--run-report` to save token counts, request timing, retries, sample outcomes
+and topic-to-output-row mappings beside the dataset as `<output-stem>.report.json`.
+Supply a path to override that location:
 
-Missing usage is marked as unknown or incomplete, never estimated. SDK-internal
-retries and direct streaming calls may not expose all usage. Reports cover only
-the current invocation, including when resuming a checkpoint. Use the model's
-applicable pricing to estimate cost; DeepFabric does not calculate a dollar fee.
+```bash
+deepfabric generate config.yaml --run-report
+deepfabric generate config.yaml --run-report results/run.report.json
+```
+
+Reports include input hashes and sampling settings, and remain available after
+checkpoint cleanup. On resume, token counts cover only the current invocation;
+previously saved samples are identified separately. Failed or gracefully stopped
+runs also retain their observed metrics. Dry runs do not write reports.
+
+Reasoning and cache counts are included in token totals, so do not add them again.
+SDK-internal retries and direct streaming usage may be unobservable. DeepFabric
+does not estimate dollar costs. Prompt recording remains controlled separately
+by `--trace-prompt`; `--debug` is not required for a report.
 
 ## Checkpoint and Resume
 

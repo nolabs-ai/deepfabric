@@ -34,10 +34,11 @@ from .exceptions import ConfigurationError, DataSetGeneratorError
 from .generator import DataSetGenerator
 from .graph import Graph
 from .llm import VerificationStatus, verify_provider_api_key
-from .llm.prompt_trace import prompt_tracing
+from .llm.prompt_trace import get_prompt_trace, prompt_tracing
 from .llm.token_usage import TokenUsageTracker, track_token_usage
 from .metrics import set_trace_debug, trace
 from .prompt_preview import preview_generation
+from .run_report import RunReport, file_reference, record_event, reporting
 from .topic_manager import load_or_build_topic_model, save_topic_model
 from .topic_model import TopicModel
 from .tui import configure_tui, get_dataset_tui, get_tui
@@ -727,11 +728,13 @@ def _run_generation(
         if dataset and len(dataset) > 0:
             tui.info(f"Saving {len(dataset)} samples generated before stop")
             save_dataset(dataset, output_save_path, preparation.config, engine=engine)
+            record_event("dataset_saved", path=output_save_path, rows=len(dataset))
         else:
             tui.warning("No samples were generated before stop")
         return
 
     save_dataset(dataset, output_save_path, preparation.config, engine=engine)
+    record_event("dataset_saved", path=output_save_path, rows=len(dataset))
 
     # Clean up checkpoint files after successful completion. Keep them when samples
     # failed, so the failed slots can still be retried with --resume --retry-failed.
@@ -764,8 +767,8 @@ def _run_generation(
     )
 
 
-def _report_token_usage(tracker: TokenUsageTracker, output_path: str | None) -> None:
-    """Display a run summary after the live TUI stops, preserving machine-readable counts."""
+def _report_token_usage(tracker: TokenUsageTracker) -> None:
+    """Display exact token counts after the live TUI stops, without creating files."""
     report = tracker.snapshot()
     if not report["requests"]:
         return
@@ -782,27 +785,18 @@ def _report_token_usage(tracker: TokenUsageTracker, output_path: str | None) -> 
         )
         partial = " (incomplete)" if not group["complete"] else ""
         tui.info(f"Token usage • {group['provider']}/{group['model']} • {counts}{partial}")
-        if tokens["reasoning_tokens"] is not None or tokens["cached_input_tokens"] is not None:
+        if any(
+            tokens[key] is not None
+            for key in ("reasoning_tokens", "cached_input_tokens", "cache_creation_input_tokens")
+        ):
             tui.info(
                 f"  reasoning={tokens['reasoning_tokens'] if tokens['reasoning_tokens'] is not None else 'unknown'} "
                 f"cached_input={tokens['cached_input_tokens'] if tokens['cached_input_tokens'] is not None else 'unknown'} "
+                f"cache_creation_input={tokens['cache_creation_input_tokens'] if tokens['cache_creation_input_tokens'] is not None else 'unknown'} "
                 "(included in output/input counts)"
             )
     if not report["complete"]:
         tui.warning("Token totals are incomplete: some calls did not return full usage metadata.")
-    if output_path is not None:
-        usage_path = Path(output_path).with_suffix(".usage.json")
-        report["scope"] = (
-            "Current CLI invocation only; provider SDK-internal retries may be unobservable."
-        )
-        try:
-            usage_path.write_text(
-                json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-            )
-        except OSError as error:
-            tui.warning(f"Could not save token usage: {error}")
-        else:
-            tui.info(f"Token usage saved to {usage_path}")
 
 
 @cli.command()
@@ -910,6 +904,15 @@ def _report_token_usage(tracker: TokenUsageTracker, output_path: str | None) -> 
 )
 @click.option("--verbose", is_flag=True, help="Trace every prompt instead of the first per stage.")
 @click.option(
+    "--run-report",
+    type=click.Path(dir_okay=False),
+    is_flag=False,
+    flag_value="",
+    default=None,
+    metavar="[PATH]",
+    help="Save run metrics and token usage (default: <output-stem>.report.json beside the dataset).",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Preview prompts with placeholders; do not call models or generate output assets.",
@@ -948,6 +951,7 @@ def generate(  # noqa: PLR0913
     trace_prompt_file: str | None = None,
     verbose: bool = False,
     dry_run: bool = False,
+    run_report: str | None = None,
 ) -> None:
     """Generate training data from a YAML configuration file or CLI parameters."""
     if trace_prompt_file and not trace_prompt:
@@ -959,7 +963,10 @@ def generate(  # noqa: PLR0913
     )
     usage_tracker = TokenUsageTracker()
     click.get_current_context().with_resource(track_token_usage(usage_tracker))
-    usage_output_path = output_save_as
+    run_metrics = RunReport() if run_report is not None and not dry_run else None
+    click.get_current_context().with_resource(reporting(run_metrics))
+    run_status = "failed"
+    report_ready = False
     # Handle deprecated --agent-mode flag
     if agent_mode == "multi_turn":
         click.echo(
@@ -1039,11 +1046,58 @@ def generate(  # noqa: PLR0913
 
         preparation = _load_and_prepare_generation_context(options, skip_path_validation=topic_only)
 
-        usage_output_path = (
-            options.topics_save_as or preparation.config.topics.save_as
-            if topic_only
-            else options.output_save_as or preparation.config.output.save_as
-        )
+        if run_metrics is not None:
+            dataset_path = options.output_save_as or preparation.config.output.save_as
+            run_report = run_report or str(Path(dataset_path).with_suffix(".report.json"))
+            topics_path = (
+                options.topics_save_as
+                or preparation.config.topics.save_as
+                or (
+                    "topic_graph.json"
+                    if preparation.config.topics.mode == "graph"
+                    else "topic_tree.jsonl"
+                )
+            )
+            protected_paths = [
+                config_file,
+                options.topics_load,
+                dataset_path,
+                topics_path,
+                get_prompt_trace().path if get_prompt_trace() else None,
+            ]
+            if any(
+                path and Path(path).resolve() == Path(run_report).resolve()
+                for path in protected_paths
+            ):
+                raise ConfigurationError(
+                    "--run-report must differ from input, dataset, topic and prompt-trace paths"
+                )
+            run_metrics.prepare_path(run_report)
+            report_ready = True
+            params = preparation.config.get_generation_params(**preparation.generation_overrides)
+            run_metrics.metadata.update(
+                config=file_reference(config_file),
+                topics=file_reference(options.topics_load),
+                output_path=str(Path(dataset_path).resolve()),
+                topic_only=topic_only,
+                resume_requested=resume,
+                num_samples=preparation.num_samples,
+                concurrency=preparation.batch_size,
+                settings={
+                    key: params.get(key)
+                    for key in (
+                        "provider",
+                        "model_name",
+                        "temperature",
+                        "max_tokens",
+                        "max_retries",
+                        "sample_retries",
+                        "topic_sample_mode",
+                        "shared_scope",
+                        "seed_field",
+                    )
+                },
+            )
         if dry_run:
             asyncio.run(
                 preview_generation(
@@ -1057,12 +1111,15 @@ def generate(  # noqa: PLR0913
             return
 
         checkpoint_dir = _prepare_output_destinations(preparation, options)
+        if run_metrics is not None:
+            run_metrics.metadata["topics"] = file_reference(options.topics_load)
         topic_model = options.prepared_topics or _initialize_topic_model(
             preparation=preparation,
             options=options,
         )
 
         if topic_only:
+            run_status = "completed"
             # Cloud upload for topic-only mode (graph only, no dataset)
             _trigger_cloud_upload(
                 preparation=preparation,
@@ -1077,6 +1134,7 @@ def generate(  # noqa: PLR0913
             options=options,
             checkpoint_dir=checkpoint_dir,
         )
+        run_status = "completed"
 
     except ConfigurationError as e:
         handle_error(click.get_current_context(), e)
@@ -1086,7 +1144,14 @@ def generate(  # noqa: PLR0913
         sys.exit(1)
     finally:
         if not dry_run:
-            _report_token_usage(usage_tracker, usage_output_path)
+            _report_token_usage(usage_tracker)
+            if run_metrics is not None and report_ready:
+                try:
+                    run_metrics.write(run_report, usage_tracker.snapshot(), run_status)
+                except OSError as error:
+                    get_tui().warning(f"Could not save run report: {error}")
+                else:
+                    get_tui().info(f"Run report saved to {run_report}")
 
 
 @cli.command("upload-hf")
