@@ -231,8 +231,8 @@ deepfabric generate config.yaml --trace-prompt --trace-prompt-file ./inspect.jso
 Traces are appended to the JSONL file without interrupting the 
 progress display. The parent directory must already exist.
 
-To change sample-generation templates, supply your own inline text or template
-files in YAML. See [generation prompt templates](../dataset-generation/prompt-templates.md).
+To change topic or sample-generation templates, supply your own inline text or
+template files in YAML. See [prompt templates](../dataset-generation/prompt-templates.md).
 
 ### Preview without generating data
 

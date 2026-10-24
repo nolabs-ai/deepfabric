@@ -19,6 +19,7 @@ from .constants import (
 from .exceptions import TreeError
 from .llm import LLMClient
 from .metrics import trace
+from .prompt_templates import TopicPromptTemplates
 from .prompts import TreePromptBuilder
 from .schemas import TopicList
 from .stream_simulator import simulate_stream
@@ -44,6 +45,8 @@ class TreeConfig(BaseModel):
     """Configuration for constructing a topic tree."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    prompt_templates: TopicPromptTemplates = Field(default_factory=TopicPromptTemplates)
 
     topic_prompt: str = Field(
         ..., min_length=1, description="The initial prompt to start the topic tree"
@@ -305,6 +308,23 @@ class Tree(TopicModel):
             num_subtopics=num_subtopics,
             system_prompt=system_prompt if system_prompt else "",
             domain=domain,
+        )
+
+        prompt = self.config.prompt_templates.render(
+            initial=len(node_path) == 1,
+            default_prompt=prompt,
+            system_prompt=system_prompt,
+            topic_prompt=self.topic_prompt,
+            current_topic=node_path[-1] if node_path else "",
+            topic_path=" -> ".join(node_path),
+            num_subtopics=num_subtopics,
+            requested=num_subtopics,
+            examples=TreePromptBuilder._format_examples(
+                TreePromptBuilder.EXAMPLES.get(domain, TreePromptBuilder.EXAMPLES["general"])
+            ),
+            current_graph_summary="",
+            prompt_style="tree",
+            mode="tree",
         )
 
         try:

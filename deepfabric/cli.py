@@ -1087,6 +1087,9 @@ def generate(  # noqa: PLR0913
                 prompt_templates=template_manifest(
                     params["prompt_templates"], params["prompt_template"]
                 ),
+                topic_prompt_templates=template_manifest(
+                    preparation.config.topics.prompt_templates
+                ),
                 settings={
                     key: params.get(key)
                     for key in (

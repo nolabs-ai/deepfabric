@@ -79,10 +79,31 @@ def placeholders(text: str) -> set[str]:
     return names
 
 
-def validate_template(text: str, step: Step) -> None:
+TOPIC_FIELDS = frozenset(
+    {
+        "system_prompt",
+        "topic_prompt",
+        "current_topic",
+        "topic_path",
+        "num_subtopics",
+        "requested",
+        "examples",
+        "current_graph_summary",
+        "prompt_style",
+        "mode",
+        "default_prompt",
+    }
+)
+
+
+def validate_template(text: str, step: str) -> None:
     if not text.strip():
         raise ValueError(f"{step} prompt template must not be empty")
-    allowed = COMMON_FIELDS | (COMPLETION_FIELDS if step == "completion" else COLLECTION_FIELDS)
+    allowed = (
+        TOPIC_FIELDS
+        if step in ("initial", "expansion")
+        else COMMON_FIELDS | (COMPLETION_FIELDS if step == "completion" else COLLECTION_FIELDS)
+    )
     unknown = placeholders(normalize_legacy(text)) - allowed
     if unknown:
         raise ValueError(
@@ -175,9 +196,38 @@ class GenerationPromptTemplates(BaseModel):
         return self
 
 
-def template_manifest(templates: GenerationPromptTemplates, legacy: str | None = None) -> dict:
+class TopicPromptTemplates(BaseModel):
+    """Independent overrides for expanding the root and deeper topic nodes."""
+
+    model_config = ConfigDict(extra="forbid")
+    initial: PromptTemplateSource | None = None
+    expansion: PromptTemplateSource | None = None
+
+    @field_validator("initial", "expansion", mode="before")
+    @classmethod
+    def inline_source(cls, value):
+        return {"text": value} if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_sources(self):
+        for name in ("initial", "expansion"):
+            source = getattr(self, name)
+            if source is not None:
+                validate_template(source.content, name)
+        return self
+
+    def render(self, *, initial: bool, default_prompt: str, **values) -> str:
+        source = self.initial if initial else self.expansion
+        if source is None:
+            return default_prompt
+        return render_template(source.content, {**values, "default_prompt": default_prompt})
+
+
+def template_manifest(
+    templates: GenerationPromptTemplates | TopicPromptTemplates, legacy: str | None = None
+) -> dict:
     overrides = {}
-    for step in TEMPLATE_STEPS:
+    for step in templates.__class__.model_fields:
         source = getattr(templates, step)
         content = (
             source.content if source is not None else legacy if step == "full_sample" else None

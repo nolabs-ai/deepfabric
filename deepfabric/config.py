@@ -22,6 +22,7 @@ from .constants import (
 )
 from .exceptions import ConfigurationError
 from .metrics import trace
+from .prompt_templates import TopicPromptTemplates
 from .topic_sampling import TopicSamplingConfig, warn_duplicate_prompt
 from .utils import parse_num_samples
 
@@ -84,6 +85,8 @@ class LLMConfig(BaseModel):
 
 class TopicsConfig(BaseModel):
     """Configuration for topic generation (tree or graph mode)."""
+
+    prompt_templates: TopicPromptTemplates = Field(default_factory=TopicPromptTemplates)
 
     prompt: str = Field(
         ..., min_length=1, description="The initial prompt to start topic generation"
@@ -631,6 +634,7 @@ See documentation for full examples.
             "max_concurrent": self.topics.max_concurrent,
             "max_tokens": self.topics.max_tokens,
             "prompt_style": self.topics.prompt_style,
+            "prompt_templates": self.topics.prompt_templates,
         }
 
         # Handle overrides

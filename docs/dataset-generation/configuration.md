@@ -148,6 +148,8 @@ Controls sample generation.
 | `output_schema` | object | - | Custom JSON Schema for structured output (see below) |
 | `llm` | object | - | Override shared LLM settings |
 
+Override topic framing with `topics.prompt_templates.initial` and `.expansion`.
+
 Override sample framing with `generation.prompt_templates.full_sample`, `.sequential_later`,
 `.seed`, or `.completion`, using inline text or `{file: path}`. See [Prompt Templates](prompt-templates.md)
 for placeholders, per-step selection and reproducible prompt experiments.

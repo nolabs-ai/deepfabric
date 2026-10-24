@@ -19,6 +19,7 @@ from .constants import (
 from .llm import LLMClient
 from .llm.rate_limit_detector import RateLimitDetector
 from .metrics import trace
+from .prompt_templates import TopicPromptTemplates
 from .prompts import (
     GRAPH_EXPANSION_PROMPT,
     GRAPH_EXPANSION_PROMPT_NO_CONNECTIONS,
@@ -39,6 +40,8 @@ class GraphConfig(BaseModel):
     """Configuration for constructing a topic graph."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    prompt_templates: TopicPromptTemplates = Field(default_factory=TopicPromptTemplates)
 
     topic_prompt: str = Field(
         ..., min_length=1, description="The initial prompt to start the topic graph"
@@ -772,6 +775,33 @@ class Graph(TopicModel):
             )
             graph_prompt = graph_prompt.replace("{{current_topic}}", parent_node.topic)
             graph_prompt = graph_prompt.replace("{{num_subtopics}}", str(num_subtopics))
+
+        source = (
+            self.config.prompt_templates.initial
+            if parent_node is self.root
+            else self.config.prompt_templates.expansion
+        )
+        if source is not None:
+            topic_path = self._get_path_to_node(parent_node)
+            domain = GraphPromptBuilder.detect_domain(self.model_system_prompt, topic_path)
+            graph_prompt = self.config.prompt_templates.render(
+                initial=parent_node is self.root,
+                default_prompt=graph_prompt,
+                system_prompt=self.model_system_prompt,
+                topic_prompt=self.topic_prompt,
+                current_topic=parent_node.topic,
+                topic_path=" -> ".join(topic_path),
+                num_subtopics=num_subtopics,
+                requested=num_subtopics,
+                examples=GraphPromptBuilder._format_examples(GraphPromptBuilder.EXAMPLES[domain]),
+                current_graph_summary=(
+                    self.to_json()
+                    if len(self.nodes) <= TOPIC_GRAPH_SUMMARY
+                    else "Graph too large to display"
+                ),
+                prompt_style=self.prompt_style,
+                mode="graph",
+            )
 
         response = await self._generate_subtopics_with_retry(graph_prompt, parent_node)
         if response is None:

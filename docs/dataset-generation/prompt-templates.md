@@ -1,4 +1,4 @@
-# Generation prompt templates
+# Prompt templates
 
 Override generation framing without editing Python or changing the built-in defaults:
 
@@ -151,6 +151,69 @@ inline prompt content; this feature does not add API system-role delivery.
 exported training messages. Conversation/agent builders retain their existing
 request stages and message roles; a completion override customizes their supplied
 scenario framing rather than replacing the entire tool loop.
+
+## Topic generation and expansion
+
+`topics.prompt_templates` works for trees and all graph `prompt_style` values:
+
+```yaml
+topics:
+  prompt: CLI risk classification
+  mode: graph
+  prompt_style: anchored
+  prompt_templates:
+    initial:
+      file: prompts/topic-initial.txt
+    expansion:
+      file: prompts/topic-expansion.txt
+```
+
+`initial` generates the children of the supplied root; `expansion` generates
+children of deeper nodes. The root text comes from `topics.prompt`, rather than
+a model call. Each omitted override keeps its own built-in prompt; `initial`
+is not a fallback for `expansion`. Sources use the same inline/file formats,
+validation and file snapshots as sample templates.
+
+For example, `prompts/topic-expansion.txt`:
+
+```text
+{{ system_prompt }}
+Expand this topic path: {{ topic_path }}
+Generate {{ num_subtopics }} focused subtopics matching the supplied schema.
+Use empty connections lists for this anchored graph.
+```
+
+Topic templates accept these placeholders (sample-only placeholders are unavailable):
+
+| Placeholder | Meaning |
+|---|---|
+| `system_prompt` | `topics.system_prompt`, inline |
+| `topic_prompt` | Supplied root text |
+| `current_topic` | Text of the node being expanded |
+| `topic_path` | Full root-to-node ancestry joined with ` -> `; graphs follow first parents |
+| `num_subtopics` / `requested` | Requested number of children |
+| `examples` | Formatted domain examples from the applicable tree/graph builder |
+| `current_graph_summary` | Graph JSON, or the existing size-limit message; empty for trees |
+| `mode` | `tree` or `graph` |
+| `prompt_style` | Graph's `default`, `isolated` or `anchored`; `tree` for trees |
+| `default_prompt` | Complete built-in prompt for this node and style |
+
+To keep the original framing, use `{{ default_prompt }}` and add your own
+instructions before or after it. A full replacement must include any desired
+context and connection guidance itself. Graph `default` prompts normally permit
+cross-connections; `isolated` and `anchored` prompts request empty connections
+lists. Templates do not change the response schema or graph processing.
+
+Preview both stages without model calls:
+
+```sh
+uv run deepfabric generate config.yaml --topic-only --dry-run --trace-prompt --verbose
+```
+
+`--verbose` includes a deeper expansion when depth is greater than one.
+`--topics-load` skips topic generation and its templates. Run reports save
+resolved topic overrides under `topic_prompt_templates` alongside
+sample-template metadata.
 
 ## Inspect and reproduce
 
