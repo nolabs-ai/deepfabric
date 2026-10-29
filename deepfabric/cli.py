@@ -605,13 +605,23 @@ def _run_generation(
 
     save_dataset(dataset, output_save_path, preparation.config, engine=engine)
 
-    # Clean up checkpoint files after successful completion
+    # Clean up checkpoint files after successful completion. Keep them when samples
+    # failed, so the failed slots can still be retried with --resume --retry-failed.
     if generation_params.get("checkpoint_interval") is not None:
-        try:
-            engine.clear_checkpoint()
-            tui.info("Checkpoint files cleaned up after successful generation")
-        except OSError as e:
-            tui.warning(f"Failed to clean up checkpoint files: {e}")
+        failure_count = len(engine.get_all_failures())
+        if failure_count:
+            samples = "sample" if failure_count == 1 else "samples"
+            tui.warning(
+                f"{failure_count} {samples} failed; keeping checkpoint files in "
+                f"{generation_params['checkpoint_path']}. To retry them, rerun the same "
+                "command with --resume --retry-failed"
+            )
+        else:
+            try:
+                engine.clear_checkpoint()
+                tui.info("Checkpoint files cleaned up after successful generation")
+            except OSError as e:
+                tui.warning(f"Failed to clean up checkpoint files: {e}")
 
     trace(
         "dataset_generated",
