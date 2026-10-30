@@ -104,8 +104,7 @@ async def test_reports_all_modes_with_concurrent_identical_topics(tmp_path, mode
         assert request["topic_path"][1] == f"parent-{request['topic_id']}"
         assert request["duration_seconds"] >= 0
         assert request["finish_reason"] == "stop"
-        # Report actual kwargs; do not silently repair independent temperature omission.
-        assert ("temperature" in request["parameters"]) == (mode != "independent")
+        assert request["parameters"]["temperature"] == engine.config.temperature
     if mode == "bulk":
         assert sum("sample_ordinal" not in r for r in requests) == 2
     else:
