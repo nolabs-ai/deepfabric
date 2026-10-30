@@ -90,7 +90,11 @@ class RunReport:
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "elapsed_seconds": perf_counter() - self.started,
             "status": status,
-            "scope": "Current invocation; resumed samples are identified separately from new outcomes.",
+            "scope": (
+                "Request/outcome/timing events and token_usage records cover the current invocation; "
+                "token_usage.cumulative, when present, spans recorded checkpoint invocations. "
+                "Resumed samples are identified separately from new outcomes."
+            ),
             "deepfabric_version": package_version,
             "source_sha256": source_hash.hexdigest(),
             **self.metadata,

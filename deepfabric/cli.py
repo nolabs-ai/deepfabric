@@ -35,7 +35,7 @@ from .generator import DataSetGenerator
 from .graph import Graph
 from .llm import VerificationStatus, verify_provider_api_key
 from .llm.prompt_trace import get_prompt_trace, prompt_tracing
-from .llm.token_usage import TokenUsageTracker, track_token_usage
+from .llm.token_usage import TokenUsageTracker, active_token_tracker, track_token_usage
 from .metrics import set_trace_debug, trace
 from .prompt_preview import preview_generation
 from .prompt_templates import template_manifest
@@ -749,11 +749,10 @@ def _run_generation(
                 "command with --resume --retry-failed"
             )
         else:
-            try:
-                engine.clear_checkpoint()
-                tui.info("Checkpoint files cleaned up after successful generation")
-            except OSError as e:
-                tui.warning(f"Failed to clean up checkpoint files: {e}")
+            # Final accounting/report publication precedes deletion in generate's finally.
+            tracker = active_token_tracker()
+            if tracker is not None:
+                tracker.checkpoint_cleanup = engine
 
     trace(
         "dataset_generated",
@@ -771,6 +770,22 @@ def _run_generation(
 def _report_token_usage(tracker: TokenUsageTracker) -> None:
     """Display exact token counts after the live TUI stops, without creating files."""
     report = tracker.snapshot()
+    _display_token_usage(report)
+    if "cumulative" in report:
+        tui = get_tui()
+        tui.info("Cumulative recorded token usage (all recorded invocations)")
+        _display_token_usage(report["cumulative"])
+        if report["cumulative"]["prior_usage_unknown"]:
+            tui.warning("Earlier checkpoint token usage is unknown (legacy checkpoint).")
+        if report["cumulative"]["persistence_failures"]:
+            tui.warning(
+                "Some token accounting snapshots could not be saved; persisted usage may be incomplete."
+            )
+        if report["cumulative"]["unfinished_invocations"]:
+            tui.warning("Unfinished invocations may have unrecorded provider usage.")
+
+
+def _display_token_usage(report: dict) -> None:
     if not report["requests"]:
         return
     tui = get_tui()
@@ -1152,14 +1167,30 @@ def generate(  # noqa: PLR0913
         sys.exit(1)
     finally:
         if not dry_run:
+            if usage_tracker.accounting is not None:
+                get_tui().info("Token usage for this invocation")
             _report_token_usage(usage_tracker)
+            report_saved = run_metrics is None
             if run_metrics is not None and report_ready:
                 try:
                     run_metrics.write(run_report, usage_tracker.snapshot(), run_status)
                 except OSError as error:
                     get_tui().warning(f"Could not save run report: {error}")
                 else:
+                    report_saved = True
                     get_tui().info(f"Run report saved to {run_report}")
+            cleanup = getattr(usage_tracker, "checkpoint_cleanup", None)
+            if cleanup is not None:
+                if report_saved:
+                    try:
+                        cleanup.clear_checkpoint()
+                        get_tui().info("Checkpoint files cleaned up after successful generation")
+                    except OSError as error:
+                        get_tui().warning(f"Failed to clean up checkpoint files: {error}")
+                else:
+                    get_tui().warning(
+                        "Keeping checkpoint files because the requested report was not saved."
+                    )
 
 
 @cli.command("upload-hf")

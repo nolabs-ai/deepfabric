@@ -264,7 +264,8 @@ Controls final dataset.
 
 #### output.checkpoint (Optional)
 
-Configuration for checkpoint-based resume capability. Checkpoints allow pausing and resuming long-running dataset generation without losing progress.
+Enable checkpointing to save progress during long-running dataset generation
+and resume after an interruption.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -284,9 +285,14 @@ output:
 
 Checkpointing creates three files in the checkpoint directory:
 
-- `{name}.checkpoint.json` - Metadata (progress, IDs processed)
+- `{name}.checkpoint.json` - Metadata, including progress, processed IDs and observed token usage
 - `{name}.checkpoint.jsonl` - Samples saved so far
 - `{name}.checkpoint.failures.jsonl` - Failed samples for debugging
+
+On resume, the saved token counts carry forward alongside generation progress.
+Successful CLI runs remove the checkpoint after printing totals and saving any
+requested report. Interrupted runs, runs with failed samples and runs whose
+report could not be saved retain it for recovery.
 
 !!! tip "Choosing Checkpoint Interval"
     The checkpoint `interval` counts settled slots (successful samples plus terminal failures). It is not increased to match topic concurrency. Saving can occur inside a topic quota.

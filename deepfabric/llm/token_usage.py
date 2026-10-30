@@ -1,8 +1,9 @@
 """Provider-reported token accounting, separate from generation results."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any
@@ -82,27 +83,62 @@ class TokenUsageTracker:
 
     def __init__(self):
         self._records: list[dict] = []
+        self._summary = _summarize([])
+        self._groups: dict[tuple[str, str], dict] = {}
         self._lock = Lock()
+        self._listeners: list[Callable[[], None]] = []
+        self.accounting = None
 
     def record(self, record: dict) -> None:
         with self._lock:
             self._records.append(record)
+            _add_record(self._summary, record)
+            identity = (record["provider"], record["model"])
+            _add_record(self._groups.setdefault(identity, _summarize([])), record)
+            listeners = list(self._listeners)
+        for listener in listeners:
+            listener()
 
-    def snapshot(self) -> dict:
-        """Return totals and provider/model groups plus each observed response."""
+    def subscribe(self, listener: Callable[[], None]) -> None:
+        """Observe completed attempts without holding the record lock during I/O."""
         with self._lock:
-            records = list(self._records)
-        groups: dict[tuple[str, str], list[dict]] = {}
-        for record in records:
-            groups.setdefault((record["provider"], record["model"]), []).append(record)
-        return {
-            **_summarize(records),
-            "by_model": [
-                {"provider": provider, "model": model, **_summarize(rows)}
-                for (provider, model), rows in groups.items()
-            ],
-            "records": records,
-        }
+            self._listeners.append(listener)
+
+    def unsubscribe(self, listener: Callable[[], None]) -> None:
+        with self._lock:
+            self._listeners.remove(listener)
+
+    def snapshot(self, *, include_accounting: bool = True, include_records: bool = True) -> dict:
+        """Return observed aggregates; omit the request ledger for periodic persistence."""
+        with self._lock:
+            result = {
+                **deepcopy(self._summary),
+                "by_model": [
+                    {"provider": provider, "model": model, **deepcopy(summary)}
+                    for (provider, model), summary in self._groups.items()
+                ],
+            }
+            if include_records:
+                result["records"] = list(self._records)
+        if include_accounting and self.accounting is not None:
+            result["checkpoint_accounting"] = self.accounting.snapshot()
+            result["cumulative"] = self.accounting.cumulative()
+        return result
+
+
+def _add_record(summary: dict, record: dict) -> None:
+    summary["requests"] += 1
+    summary["requests_with_usage"] += bool(record["raw_usage"])
+    summary["requests_without_usage"] += not record["raw_usage"]
+    for field in _FIELDS:
+        count = record["tokens"][field]
+        if count is not None:
+            summary["field_coverage"][field] += 1
+            summary["tokens"][field] = (summary["tokens"][field] or 0) + count
+    summary["complete"] = all(
+        summary["field_coverage"][field] == summary["requests"]
+        for field in ("input_tokens", "output_tokens", "total_tokens")
+    )
 
 
 def _summarize(records: list[dict]) -> dict:
@@ -137,6 +173,11 @@ _trackers: ContextVar[tuple[TokenUsageTracker, ...]] = ContextVar(
     "token_usage_trackers", default=()
 )
 _request: ContextVar[_Request | None] = ContextVar("token_usage_request", default=None)
+
+
+def active_token_tracker() -> TokenUsageTracker | None:
+    """Return the outer invocation tracker, when a caller supplies one."""
+    return next(iter(_trackers.get()), None)
 
 
 @contextmanager

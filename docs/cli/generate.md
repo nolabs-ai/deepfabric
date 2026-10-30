@@ -263,27 +263,35 @@ The generation process provides real-time feedback:
 
 ### Token usage and run reports
 
-DeepFabric prints exact input, output and total token counts after generation.
-Missing usage is marked as unknown or incomplete. No metrics file is created by default.
+After generation, DeepFabric prints the input, output and total token counts
+reported by providers. With checkpointing enabled, the summary shows both the
+current invocation and cumulative observed usage across resumes. Reasoning and
+cache counts are already included in the totals, so do not add them again.
 
-Use `--run-report` to save token counts, request timing, retries, sample outcomes
-and topic-to-output-row mappings beside the dataset as `<output-stem>.report.json`.
-Supply a path to override that location:
+To keep these counts along with request timing, retries, sample outcomes and
+topic-to-output-row mappings, use `--run-report`. The report is saved beside the
+dataset as `<output-stem>.report.json`, or at a path you supply:
 
 ```bash
 deepfabric generate config.yaml --run-report
 deepfabric generate config.yaml --run-report results/run.report.json
 ```
 
-Reports include input hashes and sampling settings, and remain available after
-checkpoint cleanup. On resume, token counts cover only the current invocation;
-previously saved samples are identified separately. Failed or gracefully stopped
-runs also retain their observed metrics. Dry runs do not write reports.
+The report also includes input hashes and sampling settings. Its events describe
+the current invocation; cumulative token counts cover the recorded checkpoint
+history. Loading a saved graph does not add its historical token usage, though
+topic generation performed during this invocation is counted.
 
-Reasoning and cache counts are included in token totals, so do not add them again.
-SDK-internal retries and direct streaming usage may be unobservable. DeepFabric
-does not estimate dollar costs. Prompt recording remains controlled separately
-by `--trace-prompt`; `--debug` is not required for a report.
+These counts reflect observed usage rather than a complete billing record.
+Missing provider usage and usage from runs before accounting was recorded remain
+unknown, and SDK-internal retries and direct streaming usage may be unobservable.
+DeepFabric marks incomplete counts and does not estimate dollar costs.
+
+No report file is created unless requested, and dry runs do not write reports.
+Reports do not require `--debug`; use `--trace-prompt` separately to record prompts.
+After a successful run, DeepFabric prints the totals and saves any requested
+report before removing the checkpoint. If the report cannot be saved, it retains
+the checkpoint so the recorded usage is preserved.
 
 ## Checkpoint and Resume
 
