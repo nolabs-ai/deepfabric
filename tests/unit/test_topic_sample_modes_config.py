@@ -197,3 +197,38 @@ def test_duplicate_warning_uses_output_override():
             generation={"system_prompt": "Persona", "instructions": "Guidance"},
             output={"save_as": "test.jsonl", "system_prompt": "Guidance"},
         )
+
+
+@pytest.mark.parametrize("override", [None, 1, 9000])
+def test_bulk_token_override_is_forwarded(make_config, override):
+    config = make_config(topic_sample_mode="bulk", bulk={"max_tokens_per_call": override})
+    assert config.bulk.max_tokens_per_call == override
+    loaded = yaml_config(topic_sample_mode="bulk", bulk={"max_tokens_per_call": override})
+    direct = DataSetGeneratorConfig(**loaded.get_generation_params())
+    assert direct.bulk.max_tokens_per_call == override
+
+
+@pytest.mark.parametrize("override", [0, -1])
+def test_bulk_token_override_must_be_positive(make_config, override):
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        make_config(topic_sample_mode="bulk", bulk={"max_tokens_per_call": override})
+
+
+@pytest.mark.parametrize("mode", ["independent", "sequential"])
+def test_bulk_token_override_rejects_nonbulk_modes(make_config, mode):
+    with pytest.raises(ValueError, match="requires topic_sample_mode: bulk"):
+        make_config(topic_sample_mode=mode, bulk={"max_tokens_per_call": 1000})
+
+
+def test_yaml_bulk_token_override(tmp_path):
+    path = tmp_path / "bulk.yaml"
+    path.write_text(
+        "topics:\n  prompt: Topics\n"
+        "generation:\n  system_prompt: Persona\n  topic_sample_mode: bulk\n"
+        "  max_tokens: 400\n  bulk:\n    max_tokens_per_call: 1200\n"
+        "output:\n  save_as: samples.jsonl\n"
+    )
+    config = DeepFabricConfig.from_yaml(str(path))
+    direct = DataSetGeneratorConfig(**config.get_generation_params())
+    assert direct.max_tokens == 400  # noqa: PLR2004
+    assert direct.bulk.max_tokens_per_call == 1200  # noqa: PLR2004

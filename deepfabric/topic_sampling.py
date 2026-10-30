@@ -9,11 +9,22 @@ from pydantic import BaseModel, Field, model_validator
 from .prompt_templates import GenerationPromptTemplates, validate_template
 
 
+class BulkConfig(BaseModel):
+    """Output-token ceiling for one bulk collection request."""
+
+    max_tokens_per_call: int | None = Field(
+        default=None,
+        ge=1,
+        description="Bulk collection ceiling; defaults to max_tokens times requested items",
+    )
+
+
 class TopicSamplingConfig(BaseModel):
     """Options for execution within a topic's allocated quota."""
 
     topic_sample_mode: Literal["independent", "sequential", "bulk"] = "independent"
     shared_scope: Literal["seed", "full"] = "seed"
+    bulk: BulkConfig = Field(default_factory=BulkConfig)
     seed_field: str | None = Field(default=None, min_length=1)
     completion_includes_topic_path: bool = False
     prompt_templates: GenerationPromptTemplates = Field(default_factory=GenerationPromptTemplates)
@@ -33,6 +44,8 @@ class TopicSamplingConfig(BaseModel):
 
     def validate_topic_sampling(self, output_schema: dict | None, *, has_tools: bool) -> None:
         """Validate options without changing existing independent-generation defaults."""
+        if self.bulk.max_tokens_per_call is not None and self.topic_sample_mode != "bulk":
+            raise ValueError("bulk.max_tokens_per_call requires topic_sample_mode: bulk")
         if self.seed_field is not None:
             if output_schema is None:
                 raise ValueError("seed_field requires generation.output_schema")

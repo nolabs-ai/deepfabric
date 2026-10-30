@@ -944,6 +944,10 @@ class DatasetGenerationTUI(StreamObserver):
         """
         # Update current step
         self.current_step = step_name
+        if "max_tokens_per_call" in metadata:
+            self.log_event(step_name)
+            if self._is_simple:
+                self.console.print(step_name, markup=False)
 
         # Extract and update sample type from metadata if available
         if "conversation_type" in metadata:

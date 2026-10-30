@@ -261,7 +261,11 @@ class GenerationConfig(TopicSamplingConfig):
         le=5,
         description="Retries for individual sample validation failures",
     )
-    max_tokens: int = Field(default=2000, ge=1, description="Maximum tokens to generate per call")
+    max_tokens: int = Field(
+        default=2000,
+        ge=1,
+        description="Base generation allowance; bulk collections scale by requested item count",
+    )
     rate_limit: dict[str, int | float | str | bool] | None = Field(
         default=None,
         description="Rate limiting and retry configuration",
@@ -683,6 +687,7 @@ See documentation for full examples.
         }
 
         params["topic_sample_mode"] = self.generation.topic_sample_mode
+        params["bulk"] = self.generation.bulk
         params["seed_field"] = self.generation.seed_field
         params["prompt_templates"] = self.generation.prompt_templates
         params["prompt_template"] = self.generation.prompt_template

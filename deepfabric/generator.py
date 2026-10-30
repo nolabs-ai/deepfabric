@@ -117,7 +117,7 @@ class DataSetGeneratorConfig(TopicSamplingConfig):
     max_tokens: int = Field(
         default=2000,
         ge=1,
-        description="Maximum tokens to generate in a single call to the llm",
+        description="Base generation allowance; bulk collections scale by requested item count",
     )
     default_batch_size: int = Field(
         default=ENGINE_DEFAULT_BATCH_SIZE,
@@ -1632,6 +1632,11 @@ class DataSetGenerator:
     def _supports_bulk_seeds(self) -> bool:
         return self.config.topic_sample_mode == "bulk" and self.config.shared_scope == "seed"
 
+    def _bulk_max_tokens(self, requested: int) -> int:
+        """Resolve a pooled ceiling for the items in this collection request."""
+        override = self.config.bulk.max_tokens_per_call
+        return override if override is not None else self.config.max_tokens * requested
+
     def _warn_bulk_token_budget(self, plan: dict) -> None:
         """Warn once per resolved plan using a coarse, count-based output estimate."""
         if not self._supports_bulk_full_records() or plan["generation_mode"] != "topic_allocation":
@@ -1645,12 +1650,15 @@ class DataSetGenerator:
             default=0,
         )
         estimated = quota * estimate_record_tokens(self.config.output_schema)
-        if estimated > self.config.max_tokens:
+        resolved = self._bulk_max_tokens(quota)
+        if estimated > resolved:
             logger.warning(
-                "bulk with shared_scope: full may exceed max_tokens=%d: up to %d outstanding "
+                "bulk with shared_scope: full may exceed resolved max_tokens_per_call=%d: "
+                "up to %d outstanding "
                 "records per topic (coarse estimate %d output tokens). Raise max_tokens, "
-                "lower the quota, or use shared_scope: seed. The token budget is unchanged.",
-                self.config.max_tokens,
+                "raise bulk.max_tokens_per_call if explicitly set, lower the quota, "
+                "or use shared_scope: seed.",
+                resolved,
                 quota,
                 estimated,
             )
@@ -1864,6 +1872,10 @@ class DataSetGenerator:
         last_error = "Bulk collection attempt budget exhausted"
         while outstanding and attempts < budget and not self.stop_requested:
             requested = len(outstanding)
+            max_tokens = self._bulk_max_tokens(requested)
+            budget_source = (
+                "explicit" if self.config.bulk.max_tokens_per_call is not None else "calculated"
+            )
             attempts += 1
             # Reserve an attempt durably before the request, including interrupted calls.
             await self._checkpoint_topic_state(queue, topic_id, attempts=attempts)
@@ -1879,6 +1891,10 @@ class DataSetGenerator:
                 "missing": requested,
                 "attempt": attempts,
                 "budget": budget,
+                "max_tokens_per_call": max_tokens,
+                "token_budget_source": budget_source,
+                "base_max_tokens": self.config.max_tokens,
+                "completion_max_tokens": self.config.max_tokens if seed_scope else None,
             }
             if attempts > 1:
                 record_event(
@@ -1891,8 +1907,20 @@ class DataSetGenerator:
             response_received = False
             unit = "seeds" if seed_scope else "samples"
             step_label = (
-                f"Generating {requested} {unit} for topic {topic_id} (attempt {attempts}/{budget})"
+                f"Generating {requested} {unit} for topic {topic_id} (attempt {attempts}/{budget}; "
+                f"token cap {max_tokens}, {budget_source}"
+                + (
+                    f" as {self.config.max_tokens} x {requested}"
+                    if budget_source == "calculated"
+                    else ""
+                )
+                + (
+                    f"; completions separately capped at {self.config.max_tokens} per call)"
+                    if seed_scope
+                    else ")"
+                )
             )
+            logger.info("%s", step_label)
             step_context = {
                 "topic_path": allocation["path"],
                 "conversation_type": self.config.conversation_type,
@@ -1903,7 +1931,7 @@ class DataSetGenerator:
                 response = await self.llm_client.generate_async(
                     prompt,
                     collection_model,
-                    max_tokens=self.config.max_tokens,
+                    max_tokens=max_tokens,
                     temperature=self.config.temperature,
                 )
                 response_received = True

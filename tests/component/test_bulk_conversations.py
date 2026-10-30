@@ -237,7 +237,7 @@ async def test_progress_labels_preview_and_slot_counts_are_separate(make_engine)
         events, dataset = await run(engine, 2)
     observer.on_step_complete.assert_called_once()
     label, metadata = observer.on_step_start.call_args.args
-    assert label == "Generating 2 samples for topic topic (attempt 1/3)"
+    assert label.startswith("Generating 2 samples for topic topic (attempt 1/3;")
     assert metadata["topic_path"] == ["Root requirements", "Child"]
     assert "sample_idx" not in metadata
     complete_label, complete_metadata = observer.on_step_complete.call_args.args
@@ -297,14 +297,20 @@ async def test_cancelled_shared_request_completes_progress_without_settling_slot
         ({"type": "object", "properties": {}}, 2, 2000, False),
     ],
 )
-async def test_quota_aware_token_warning_never_scales_budget(
+async def test_quota_aware_token_warning_uses_explicit_collection_budget(
     make_engine, caplog, custom_schema, target, budget, expected
 ):
-    engine = make_engine(output_schema=custom_schema, max_tokens=budget)
+    engine = make_engine(
+        output_schema=custom_schema,
+        max_tokens=budget,
+        topic_sample_mode="bulk",
+        shared_scope="full",
+        bulk={"max_tokens_per_call": budget},
+    )
     records = [conversation(str(i)) if custom_schema is None else {} for i in range(target)]
     responses(engine, records)
     await run(engine, target)
-    assert ("may exceed max_tokens" in caplog.text) is expected
+    assert ("may exceed resolved max_tokens_per_call" in caplog.text) is expected
     assert engine.config.max_tokens == budget
     assert engine.llm_client.generate_async.call_args.kwargs["max_tokens"] == budget
     if expected:
@@ -327,7 +333,8 @@ def test_public_full_scope_accepts_non_tool_configs(output_schema):
 
 
 async def test_token_warning_uses_remaining_quota_on_resume(make_engine, caplog):
-    engine = make_engine()
+    options = {"topic_sample_mode": "bulk", "bulk": {"max_tokens_per_call": 2000}}
+    engine = make_engine(**options)
 
     async def initial(prompt, schema, **kwargs):
         engine.stop_requested = True
@@ -335,13 +342,13 @@ async def test_token_warning_uses_remaining_quota_on_resume(make_engine, caplog)
 
     engine.llm_client.generate_async = AsyncMock(side_effect=initial)
     await run(engine, 3)
-    assert "may exceed max_tokens" in caplog.text
-    restored = make_engine()
+    assert "may exceed resolved max_tokens_per_call" in caplog.text
+    restored = make_engine(**options)
     assert restored.load_checkpoint()
     caplog.clear()
     responses(restored, [conversation("Next"), conversation("Last")])
     await run(restored, 3)
-    assert "may exceed max_tokens" not in caplog.text
+    assert "may exceed resolved max_tokens_per_call" not in caplog.text
 
 
 async def test_preview_stream_reaches_observer_without_changing_slot_counts(make_engine):

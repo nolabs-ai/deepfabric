@@ -206,11 +206,11 @@ async def test_nested_collection_adapter_round_trip(
     assert [value["requested"] for value in requests] == ([2, 2, 1] if partial else [2])
     assert [value["attempt"] for value in requests] == ([1, 2, 3] if partial else [1])
     assert len(sent) == (3 if partial else 1)
-    for body in sent:
+    for body, request in zip(sent, requests, strict=True):
         if provider == "gemini":
-            assert body["config"].max_output_tokens == 6000
+            assert body["config"].max_output_tokens == 6000 * request["requested"]
             assert body["contents"].startswith(engine.generation_prompt)
         else:
-            assert body["max_tokens"] == 6000
+            assert body["max_tokens"] == 6000 * request["requested"]
             assert body["messages"][0]["role"] == "user"
     assert Conversation.model_json_schema() == original_schema

@@ -107,7 +107,7 @@ async def test_full_quota_records_flatten_with_stable_slots(make_engine):
     assert "Generation persona" in prompt and "Dataset persona" not in prompt
     assert "Root specification -> topic-0" in prompt and "Use concrete values" in prompt
     assert model.model_json_schema()["properties"]["items"]["items"] == SCHEMA
-    assert call.kwargs["max_tokens"] == 1234
+    assert call.kwargs["max_tokens"] == 1234 * 3
     assert "max_retries" not in call.kwargs
     assert engine._collection_attempts == {"topic-0": 1}
     assert events[-1]["unaccounted"] == 0
@@ -406,3 +406,58 @@ async def test_schema_permitted_null_values_are_preserved(make_engine):
     responses(engine, [{"name": None, "price": 1}])
     _, dataset = await run(engine, 1)
     assert list(dataset) == [{"name": None, "price": 1}]
+
+
+@pytest.mark.parametrize("override,expected", [(None, [600, 400]), (900, [900, 900])])
+async def test_collection_budget_tracks_remaining_request_and_reports_source(
+    make_engine, override, expected
+):
+    engine = make_engine(
+        topic_sample_mode="bulk",
+        shared_scope="full",
+        max_tokens=200,
+        bulk={"max_tokens_per_call": override},
+    )
+    responses(engine, [row("A")], [row("B"), row("C")])
+    events, dataset = await run(engine, 3)
+    assert len(dataset) == 3
+    assert [
+        call.kwargs["max_tokens"] for call in engine.llm_client.generate_async.call_args_list
+    ] == expected
+    resolved = requests(events)
+    assert [event["max_tokens_per_call"] for event in resolved] == expected
+    assert {event["token_budget_source"] for event in resolved} == {
+        "explicit" if override is not None else "calculated"
+    }
+    assert all(event["completion_max_tokens"] is None for event in resolved)
+
+
+async def test_resumed_collection_uses_current_budget_and_pending_count(make_engine):
+    engine = make_engine(max_tokens=200)
+
+    async def initial(prompt, schema, **kwargs):
+        engine.stop_requested = True
+        return schema.model_validate_json(json.dumps({"items": [row("Saved")]}))
+
+    engine.llm_client.generate_async = AsyncMock(side_effect=initial)
+    await run(engine, 3)
+    assert engine.llm_client.generate_async.call_args.kwargs["max_tokens"] == 600
+    restored = make_engine(max_tokens=300)
+    assert restored.load_checkpoint()
+    responses(restored, [row("Next"), row("Last")])
+    events, dataset = await run(restored, 3)
+    assert len(dataset) == 3
+    assert requests(events)[0]["requested"] == 2
+    assert requests(events)[0]["max_tokens_per_call"] == 600
+    assert list(dataset)[0] == row("Saved")
+
+
+async def test_collection_budget_uses_each_topics_allocation(make_engine):
+    engine = make_engine(max_tokens=200)
+    responses(engine, [row("A"), row("B"), row("C")], [row("D"), row("E")])
+    events, dataset = await run(engine, 5, topic_model=topics(2), batch_size=1)
+    assert len(dataset) == 5
+    assert [(event["requested"], event["max_tokens_per_call"]) for event in requests(events)] == [
+        (3, 600),
+        (2, 400),
+    ]

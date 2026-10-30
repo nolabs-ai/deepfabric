@@ -355,7 +355,7 @@ async def test_progress_and_persistence_keep_seeds_out_of_sample_counts(make_eng
     with patch("deepfabric.generator.simulate_stream"):
         events, dataset = await run(engine, 2)
     starts = observer.on_step_start.call_args_list
-    assert starts[0].args[0] == "Generating 2 seeds for topic topic-0 (attempt 1/3)"
+    assert starts[0].args[0].startswith("Generating 2 seeds for topic topic-0 (attempt 1/3;")
     assert "sample_idx" not in starts[0].args[1]
     assert [call.args[1]["sample_idx"] for call in starts[1:]] == [1, 2]
     assert phases == ["seeds", "completion", "completion"]
@@ -655,3 +655,30 @@ async def test_pre_seed_v5_checkpoint_resumes_with_only_outstanding_seeds(make_e
         {"name": "A", "price": 1},
         {"name": "C", "price": 3},
     ]
+
+
+@pytest.mark.parametrize("override,expected", [(None, [600, 400]), (900, [900, 900])])
+async def test_seed_collection_and_completion_have_separate_token_budgets(
+    make_engine, override, expected
+):
+    engine = make_engine(max_tokens=200, bulk={"max_tokens_per_call": override})
+    reporter = Mock(spec=ProgressReporter)
+    engine.progress_reporter = reporter
+    script(
+        engine, {"items": ["A"]}, {"items": ["B", "C"]}, {"price": 1}, {"price": 2}, {"price": 3}
+    )
+    events, dataset = await run(engine, 3)
+    assert len(dataset) == 3
+    calls = engine.llm_client.generate_async.call_args_list
+    assert [call.kwargs["max_tokens"] for call in calls] == [*expected, 200, 200, 200]
+    resolved = events_of(events, "seed_request")
+    assert [event["max_tokens_per_call"] for event in resolved] == expected
+    assert {event["completion_max_tokens"] for event in resolved} == {200}
+    collection_steps = [
+        call
+        for call in reporter.emit_step_start.call_args_list
+        if "max_tokens_per_call" in call.kwargs
+    ]
+    assert len(collection_steps) == 2
+    assert "completions separately capped at 200 per call" in collection_steps[0].args[0]
+    assert ("calculated as 200 x 3" in collection_steps[0].args[0]) is (override is None)

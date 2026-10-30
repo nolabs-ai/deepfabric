@@ -144,7 +144,8 @@ Controls sample generation.
 | `tools` | object | - | Tool configuration |
 | `max_retries` | int | 3 | Retries on API failures |
 | `sample_retries` | int | 2 | Retries on validation failures |
-| `max_tokens` | int | 2000 | Max tokens per generation |
+| `max_tokens` | int | 2000 | Base output-token allowance; bulk collection calls scale by requested item count |
+| `bulk.max_tokens_per_call` | int or null | null | Explicit positive ceiling for a bulk collection call; requires bulk mode |
 | `output_schema` | object | - | Custom JSON Schema for structured output (see below) |
 | `llm` | object | - | Override shared LLM settings |
 
@@ -153,6 +154,9 @@ Override topic framing with `topics.prompt_templates.initial` and `.expansion`.
 Override sample framing with `generation.prompt_templates.full_sample`, `.sequential_later`,
 `.seed`, or `.completion`, using inline text or `{file: path}`. See [Prompt Templates](prompt-templates.md)
 for placeholders, per-step selection and reproducible prompt experiments.
+
+Bulk collection calls default to `max_tokens × requested items`; set `generation.bulk.max_tokens_per_call` to override the per-call ceiling.
+In seed mode, seed generation and sample completion have separate budgets: the seed collection uses the bulk ceiling, and each sample completion uses `max_tokens`. Resolved budgets are shown before collection calls.
 
 #### generation.output_schema (Custom Structured Output)
 
