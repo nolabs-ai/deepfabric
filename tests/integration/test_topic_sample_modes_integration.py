@@ -1,7 +1,7 @@
 """Opt-in topic-mode checks against real providers and, separately, real Spin.
 
-See deepfabric-topic-sample-modes-test-guide.md at the repository root for enable
-flags, model settings, and artifacts.
+Enable provider checks with DEEPFABRIC_TOPIC_MODES_LIVE=1; select providers with
+DEEPFABRIC_TOPIC_MODES_PROVIDERS and set each provider's credentials and test model.
 These tests do not bypass the public bulk-full gate or use prompt-scenarios.csv.
 """
 # ruff: noqa: PLR2004, ARG001
