@@ -12,6 +12,7 @@ import yaml
 
 from click.testing import CliRunner
 
+from deepfabric.builders import SingleShotBuilder
 from deepfabric.bulk import completion_schema, make_completion_model, record_validator
 from deepfabric.cli import cli
 from deepfabric.config import DeepFabricConfig, GenerationConfig
@@ -250,7 +251,9 @@ async def test_conversation_override_preserves_exported_roles_and_system_prompt(
     )
 
     async def generate(prompt, schema, **kwargs):
-        assert isinstance(prompt, str) and "CUSTOM GENERATION_PERSONA DATASET_PERSONA" in prompt
+        assert prompt == (
+            "CUSTOM GENERATION_PERSONA DATASET_PERSONA Root -> Parent -> Internal target"
+        )
         assert "system_prompt" not in kwargs
         return schema.model_validate(
             {
@@ -272,6 +275,61 @@ async def test_conversation_override_preserves_exported_roles_and_system_prompt(
     ) + ["user", "assistant"]
     if include_system:
         assert sample["messages"][0]["content"] == "DATASET_PERSONA"
+
+
+@pytest.mark.parametrize("kind", ["basic", "cot"])
+@pytest.mark.parametrize("source", ["legacy", "full_sample", "sequential_later", "file"])
+async def test_single_shot_custom_prompt_is_complete_and_keeps_retry_feedback(
+    tmp_path, kind, source
+):
+    options = {"output_schema": None, "conversation_type": kind, "instructions": "EXTRA"}
+    step = "sequential_later" if source == "sequential_later" else "full_sample"
+    if source == "legacy":
+        options["prompt_template"] = "ONLY {{ topic_path }}"
+    else:
+        content = "ONLY {{ topic_path }}"
+        if source == "file":
+            path = tmp_path / "frame.txt"
+            path.write_text(content, encoding="utf-8")
+            content = {"file": str(path)}
+        options["prompt_templates"] = {step: content}
+    engine = make_engine(**options)
+    builder = SingleShotBuilder(engine.llm_client, engine.config)
+    engine.llm_client.generate_async = AsyncMock(
+        side_effect=lambda **kwargs: kwargs["schema"].model_validate(
+            {"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}
+        )
+    )
+    with patch.object(builder, "_build_prompt", side_effect=AssertionError("unexpected wrapper")):
+        await builder.generate("ONLY Root -> Target", "validation error", prompt_step=step)
+    assert engine.llm_client.generate_async.call_args.kwargs["prompt"] == (
+        "ONLY Root -> Target\nRETRY: validation error"
+    )
+
+
+async def test_sequential_later_override_does_not_bypass_default_first_prompt():
+    engine = make_engine(
+        output_schema=None,
+        topic_sample_mode="sequential",
+        prompt_templates={"sequential_later": "LATER {{ topic_path }}"},
+    )
+    prompts = []
+
+    async def generate(prompt, schema, **kwargs):
+        prompts.append(prompt)
+        return schema.model_validate(
+            {"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}
+        )
+
+    engine.llm_client.generate_async = AsyncMock(side_effect=generate)
+    for ordinal in (0, 1):
+        prompt = engine._build_sequential_prompt(ALLOCATION, [], 0, later=ordinal > 0)
+        sample, failure = await engine._generate_sequential_sample_outcome(
+            prompt, ALLOCATION, ordinal, ordinal, False
+        )
+        assert sample is not None and failure is None
+    assert prompts[0].startswith("GENERATION_PERSONA\n\nTopic/Scenario:")
+    assert prompts[1] == "LATER Root -> Parent -> Internal target"
 
 
 def test_custom_preview_and_real_composition_match_without_provider_calls(tmp_path):
@@ -341,8 +399,10 @@ def test_yaml_accepts_legacy_scalar():
         ("full_sample", "conversation_generation"),
         ("seed", "bulk_seed_sample"),
         ("seed", "bulk_conversation_seed"),
+        ("seed", "bulk_cot_seed"),
         ("completion", "bulk_completion"),
         ("completion", "bulk_conversation_completion"),
+        ("completion", "bulk_cot_completion"),
     ],
 )
 def test_packaged_step_templates_can_be_copied_as_overrides(step, name):

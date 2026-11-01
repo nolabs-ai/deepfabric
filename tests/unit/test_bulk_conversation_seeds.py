@@ -39,4 +39,4 @@ async def test_agent_cleanup_on_interrupted_completion(make_engine, spin_session
     assert len(spin_sessions) == 1
     spin_sessions[0].execute_tool.assert_awaited_once()
     spin_sessions[0].cleanup.assert_awaited_once()
-    assert builder._completion_context is None
+    assert builder._coordinated_generation is False

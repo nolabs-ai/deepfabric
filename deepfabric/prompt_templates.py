@@ -33,6 +33,7 @@ COMMON_FIELDS = frozenset(
 )
 COLLECTION_FIELDS = frozenset(
     {
+        "additional_instructions",
         "request_instruction",
         "output_instructions",
         "record_instructions",

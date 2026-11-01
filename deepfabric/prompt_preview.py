@@ -59,7 +59,13 @@ def _offline_generation_params(params: dict) -> dict:
     return params
 
 
-async def _preview_builder(engine: DataSetGenerator, prompt: str, *, pinned: bool = False) -> None:
+async def _preview_builder(
+    engine: DataSetGenerator,
+    prompt: str,
+    *,
+    pinned: bool = False,
+    prompt_step: str = "full_sample",
+) -> None:
     builder = ConversationBuilderFactory.create(
         config=engine.config, llm=engine.llm_client, tool_registry=engine.tool_registry
     )
@@ -70,6 +76,7 @@ async def _preview_builder(engine: DataSetGenerator, prompt: str, *, pinned: boo
                 pinned_user_message=ChatMessage(role="user", content=USER_REQUEST)
                 if pinned
                 else None,
+                prompt_step=prompt_step,
             )
         )
         return
@@ -77,9 +84,6 @@ async def _preview_builder(engine: DataSetGenerator, prompt: str, *, pinned: boo
     # Preview each dependent agent stage separately. Never enter the tool execution loop.
     if not pinned:
         await _capture(builder._generate_user_question(prompt))
-    builder._completion_context = (
-        prompt if pinned or engine.config.topic_sample_mode == "sequential" else None
-    )
     user = ChatMessage(role="user", content=USER_REQUEST)
     result = ToolExecution(
         function_name="{{{tool name}}}",
@@ -256,4 +260,10 @@ async def preview_generation(
                 engine.llm_client.generate_async(prompt, engine._get_custom_schema_model())
             )
         else:
-            await _preview_builder(engine, prompt)
+            await _preview_builder(
+                engine,
+                prompt,
+                prompt_step="sequential_later"
+                if later and engine.config.topic_sample_mode == "sequential"
+                else "full_sample",
+            )

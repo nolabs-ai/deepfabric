@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from deepfabric.builders import SingleShotBuilder
 from deepfabric.builders_agent import SingleTurnAgentBuilder
 from tests.support import bulk_conversation_seeds as _support
 from tests.support.bulk_conversation_seeds import FINAL_STEP, TOOL, TOOL_STEP, script
@@ -69,13 +70,91 @@ async def test_prompt_matrix_and_exact_pin(make_engine, kind, persona, path, shi
     completion_prompt, model = unpack(engine.llm_client.generate_async.call_args_list[1])
     assert "PRIVATE_ROOT" in seed_prompt
     assert "GENERATION_PERSONA" in seed_prompt and "OUTPUT_PERSONA" not in seed_prompt
+    assert seed_prompt.count("GENERATION_PERSONA") == (1 if kind == "cot" else 2)
+    assert seed_prompt.count("SPECIAL_INSTRUCTIONS") == 2
+    assert "Topic/Scenario:" in seed_prompt
+    assert "Generate 1 user request for this topic." in seed_prompt
+    assert 'an "items" list containing only the user-message text strings' in seed_prompt
+    assert "Do NOT add assistant messages" in seed_prompt
+    if kind == "cot":
+        assert "Generate reasoning problems" in seed_prompt
+        assert "REASONING FORMAT:" not in seed_prompt
+        assert completion_prompt.startswith(resolved + "\n\nTopic/Scenario:")
     assert ("PRIVATE_ROOT" in completion_prompt) is path
     assert resolved in completion_prompt
+    pinned_index = completion_prompt.index("<pinned_user_request>")
+    assert completion_prompt.index("Here is the user request you should answer:") < pinned_index
+    assert completion_prompt.index("SPECIAL_INSTRUCTIONS") < pinned_index
+    assert completion_prompt.index("DEMONSTRATION_SENTINEL") < pinned_index
+    if path:
+        assert completion_prompt.index("PRIVATE_ROOT") < pinned_index
+    if kind == "cot":
+        assert pinned_index < completion_prompt.index("REASONING FORMAT:")
+        assert completion_prompt.index("REASONING FORMAT:") < completion_prompt.index("IMPORTANT:")
+        assert "Generate and return only the 'assistant' message" in completion_prompt
+        assert completion_prompt.rstrip().endswith(
+            "Do NOT include any 'system' role messages - those are added separately."
+        )
+    else:
+        assert pinned_index < completion_prompt.index("Return only")
+        assert completion_prompt.rstrip().endswith(
+            "Do not reproduce a user turn or a message array."
+        )
+    assert "The pinned seed supplies the task context" not in completion_prompt
+    assert "Use the supplied topic context and pinned seed" not in completion_prompt
     assert set(model.model_json_schema()["properties"]) == (
         {"content", "reasoning"} if kind == "cot" else {"content"}
     )
     for prompt in (seed_prompt, completion_prompt):
         assert "SPECIAL_INSTRUCTIONS" in prompt and "DEMONSTRATION_SENTINEL" in prompt
+
+
+@pytest.mark.parametrize("requested", [1, 3])
+def test_seed_framing_omits_unconfigured_instruction_sections(make_engine, requested):
+    engine = make_engine(instructions="")
+    prompt = engine._build_bulk_collection_prompt({"path": ["ROOT", "TOPIC"]}, requested, [], 0)
+    assert prompt.count("GENERATION_PERSONA") == 2
+    expected = (
+        "Generate 1 user request for this topic."
+        if requested == 1
+        else f"Generate {requested} diverse user requests for this topic."
+    )
+    assert expected in prompt
+    assert "Additional Instructions:" not in prompt
+    assert "<instructions>" not in prompt
+    assert "<accepted_siblings>" not in prompt
+
+
+@pytest.mark.parametrize("style", ["freetext", "agent"])
+@pytest.mark.parametrize("requested", [1, 3])
+def test_cot_seed_history_order_and_completion_reasoning_format(make_engine, style, requested):
+    engine = make_engine(conversation_type="cot", reasoning_style=style)
+    allocation = {"path": ["ROOT", "TOPIC"]}
+    seed = engine._build_bulk_collection_prompt(allocation, requested, ["Earlier question"], 0)
+    assert seed.startswith("GENERATION_PERSONA\n\nTopic/Scenario: Generate reasoning problems")
+    assert seed.index("Additional Instructions:") < seed.index("<accepted_siblings>")
+    assert seed.index("</accepted_siblings>") < seed.index(f"Generate {requested} ")
+    assert "REASONING FORMAT:" not in seed
+    assert 'an "items" list containing only the user-message text strings' in seed
+    if style == "agent":
+        assert "Create realistic dialogues" not in seed
+        assert (
+            "Create realistic reasoning problems that require methodical reasoning to solve."
+            in seed
+        )
+        baseline = engine.build_prompt(engine._get_prompt_template(), 0, allocation["path"])
+        assert "Create realistic dialogues where complex problems are solved" in baseline
+    completion = engine._conversation_completion_prompt(allocation, "Pinned question", 0)
+    assert completion.startswith("OUTPUT_PERSONA\n\nTopic/Scenario:")
+    assert completion.index("Pinned question") < completion.index("REASONING FORMAT:")
+    assert (
+        "plain string (not a list)." if style == "freetext" else "ReasoningStep objects."
+    ) in completion
+    independent = SingleShotBuilder(engine.llm_client, engine.config)._build_prompt("SCENARIO")
+    reasoning_format = next(
+        line for line in independent.splitlines() if line.startswith("REASONING FORMAT:")
+    )
+    assert reasoning_format in completion
 
 
 async def test_partial_invalid_seeds_and_slot_retry_isolation(make_engine):
@@ -225,7 +304,7 @@ async def test_seed_only_resume_does_not_recollect(make_engine):
 
 @pytest.mark.parametrize("kind,style", [("basic", None), ("cot", "agent"), ("cot", "freetext")])
 @pytest.mark.parametrize("include_path", [False, True])
-async def test_agent_pins_request_and_carries_context_to_both_stages(
+async def test_agent_pins_request_and_keeps_generation_context_out_of_completion(
     make_engine, spin_sessions, kind, style, include_path
 ):
     engine = make_engine(
@@ -262,18 +341,134 @@ async def test_agent_pins_request_and_carries_context_to_both_stages(
         session.execute_tool.assert_awaited_once()
         session.cleanup.assert_awaited_once()
     calls = engine.llm_client.generate_async.call_args_list
-    assert "CATALOG_SENTINEL" in unpack(calls[0])[0]
+    assert "Should require using tools to answer" in unpack(calls[0])[0]
     for call in calls[1:]:
         prompt, _ = unpack(call)
-        for text in (
-            "OUTPUT_PERSONA",
-            "SPECIAL_INSTRUCTIONS",
-            "DEMONSTRATION_SENTINEL",
-            "CATALOG_SENTINEL",
-        ):
-            assert text in prompt
+        assert "CATALOG_SENTINEL" in prompt
+        if unpack(call)[1].__name__ == "AgentResponse":
+            assert "OUTPUT_PERSONA" in prompt
+        else:
+            assert "OUTPUT_PERSONA" not in prompt
+        assert "SPECIAL_INSTRUCTIONS" not in prompt
+        assert "DEMONSTRATION_SENTINEL" not in prompt
         assert "GENERATION_PERSONA" not in prompt
-        assert ("PRIVATE_ROOT" in prompt) is include_path
+        assert "PRIVATE_ROOT" not in prompt
+
+
+@pytest.mark.parametrize(
+    "mode,options",
+    [
+        ("sequential", {"shared_scope": "seed"}),
+        ("sequential", {"shared_scope": "full"}),
+        ("bulk", {"completion_includes_topic_path": False}),
+        ("bulk", {"completion_includes_topic_path": True}),
+    ],
+)
+@pytest.mark.parametrize("kind", ["basic", "cot"])
+async def test_agent_prompts_match_independent_except_question_collection_shape(
+    make_engine, spin_sessions, mode, options, kind
+):
+    prompts = []
+    question_prompts = []
+    for sample_mode, settings in [("independent", {}), (mode, options)]:
+        engine = make_engine(
+            topic_sample_mode=sample_mode,
+            conversation_type=kind,
+            reasoning_style="agent" if kind == "cot" else None,
+            output_save_as=f"{sample_mode}.jsonl",
+            custom_tools=[TOOL],
+            spin_endpoint="http://spin.invalid",
+            **settings,
+        )
+        question = "Look up the current value"
+        script(
+            engine,
+            {"items": [question]} if sample_mode == "bulk" else {"content": question},
+            TOOL_STEP,
+            FINAL_STEP,
+            {"content": "The observed value"},
+        )
+        _, dataset = await run(engine)
+        assert len(dataset) == 1, engine.get_all_failures()
+        question_prompt, _ = unpack(engine.llm_client.generate_async.call_args_list[0])
+        if sample_mode == "bulk":
+            question_prompt = question_prompt.replace(
+                "Generate 1 user request for this topic.",
+                "Generate a short, natural user question for this scenario:",
+            ).replace(
+                'Generate only the user questions as an object with an "items" list of strings:',
+                "Generate only the user's question:",
+            )
+        question_prompts.append(question_prompt)
+        prompts.append(
+            [
+                (schema.__name__, prompt)
+                for prompt, schema in map(unpack, engine.llm_client.generate_async.call_args_list)
+                if schema.__name__ in ("AgentStep", "AgentResponse")
+            ]
+        )
+    assert [name for name, _ in prompts[0]] == ["AgentStep", "AgentStep", "AgentResponse"]
+    assert prompts[1] == prompts[0]
+    assert question_prompts[1] == question_prompts[0]
+    assert question_prompts[0].count("GENERATION_PERSONA") == (0 if kind == "cot" else 1)
+    assert ("ARGUMENT REQUIREMENTS:" in question_prompts[0]) is (kind == "cot")
+    assert ("You may use 1 to 3 tools" in question_prompts[0]) is (kind == "cot")
+    assert "Should require using tools to answer" in question_prompts[0]
+
+
+@pytest.mark.parametrize("kind", ["basic", "cot"])
+@pytest.mark.parametrize("requested", [1, 4])
+def test_agent_bulk_question_prompt_differs_only_in_collection_request_and_output_shape(
+    make_engine, kind, requested
+):
+    engine = make_engine(custom_tools=[TOOL], max_tools_per_query=2, conversation_type=kind)
+    path = ["ROOT", "TOPIC"]
+    independent = SingleTurnAgentBuilder.build_user_question_prompt(
+        engine.build_prompt(engine._get_prompt_template(), 0, path)
+    )
+    bulk = engine._build_bulk_collection_prompt({"path": path}, requested, [], 0)
+    collection_request = (
+        "Generate 1 user request for this topic."
+        if requested == 1
+        else "Generate 4 diverse user requests for this topic."
+    )
+    expected = independent.replace(
+        "Generate a short, natural user question for this scenario:",
+        collection_request,
+    ).replace(
+        "Generate only the user's question:",
+        'Generate only the user questions as an object with an "items" list of strings:',
+    )
+    assert bulk == expected
+    assert "Generate 1 short, natural user questions" not in bulk
+    assert ("diverse user requests" in bulk) is (requested > 1)
+    assert ("You may use 1 to 2 tools" in bulk) is (kind == "cot")
+    retry = engine._build_bulk_collection_prompt({"path": path}, 1, ["Already asked"], 0)
+    assert "<accepted_siblings>" in retry and "Already asked" in retry
+    assert "Generate 1 user request for this topic." in retry
+
+
+async def test_independent_agent_question_prompt_preserves_legacy_wrapper(make_engine):
+    engine = make_engine(custom_tools=[TOOL], topic_sample_mode="independent")
+    script(engine, {"content": "A complete user question"})
+    builder = SingleTurnAgentBuilder(engine.llm_client, engine.config, engine.tool_registry)
+    await builder._generate_user_question("SCENARIO")
+    prompt, _ = unpack(engine.llm_client.generate_async.call_args)
+    assert (
+        prompt
+        == """Generate a short, natural user question for this scenario:
+SCENARIO
+
+Requirements:
+- Just the user's question - no reasoning, no explanations, no examples
+- Should require using tools to answer
+- 1-2 sentences maximum
+- Natural, conversational tone
+
+Example format: "Can you tell me the weather in Paris tomorrow and suggest what to wear?"
+
+Generate only the user's question:"""
+    )
 
 
 async def test_agent_retry_budget_is_not_multiplied_and_sessions_are_fresh(
