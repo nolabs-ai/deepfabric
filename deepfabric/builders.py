@@ -155,12 +155,15 @@ class SingleShotBuilder(ConversationBuilder):
         error_feedback: str | None = None,
         *,
         pinned_user_message: ChatMessage | None = None,
+        prompt_step: str = "full_sample",
     ) -> Conversation:
         """Generate conversation using single LLM call with JSON schema.
 
         Args:
             topic_prompt: Topic or scenario to generate conversation about
             error_feedback: Optional error message from a previous failed attempt
+            prompt_step: Selected whole-sample template step, used to identify
+                custom templates that supply the complete prompt.
 
         Returns:
             Complete Conversation object
@@ -172,8 +175,16 @@ class SingleShotBuilder(ConversationBuilder):
             return await self._complete_pinned_user(
                 topic_prompt, pinned_user_message, error_feedback
             )
-        # Build the generation prompt
-        generation_prompt = self._build_prompt(topic_prompt, error_feedback)
+        source = getattr(self.config.prompt_templates, prompt_step)
+        if prompt_step == "sequential_later" and source is None:
+            source = self.config.prompt_templates.full_sample
+        custom_template = source is not None or self.config.prompt_template is not None
+        if custom_template:
+            generation_prompt = topic_prompt
+            if error_feedback:
+                generation_prompt += f"\nRETRY: {error_feedback}"
+        else:
+            generation_prompt = self._build_prompt(topic_prompt, error_feedback)
 
         # Always use non-streaming for reliable structured output
         conversation = await self._generate_non_streaming(generation_prompt)
@@ -263,23 +274,26 @@ class SingleShotBuilder(ConversationBuilder):
             temperature=self.config.temperature,
         )
 
-    def _build_prompt(self, topic_prompt: str, error_feedback: str | None = None) -> str:
+    def _build_prompt(
+        self,
+        topic_prompt: str,
+        error_feedback: str | None = None,
+        *,
+        requested: int | str | None = None,
+    ) -> str:
         """Build the generation prompt for single-shot generation.
 
         Args:
             topic_prompt: The topic to generate about
             error_feedback: Optional error message from a previous failed attempt
+            requested: Number of complete conversations for bulk/full collection;
+                omitted for an individual conversation.
 
         Returns:
             Complete prompt string for the LLM
         """
         # Use the generation system prompt as the base
-        sequential = self.config.topic_sample_mode == "sequential"
-        prompt_parts = (
-            [topic_prompt]
-            if sequential
-            else [self.config.generation_system_prompt, f"\nTopic/Scenario: {topic_prompt}"]
-        )
+        prompt_parts = [self.config.generation_system_prompt, f"\nTopic/Scenario: {topic_prompt}"]
 
         # Add error feedback if this is a retry
         if error_feedback:
@@ -288,7 +302,7 @@ class SingleShotBuilder(ConversationBuilder):
             )
 
         # Add any additional instructions
-        if self.config.instructions and not sequential:
+        if self.config.instructions:
             prompt_parts.append(f"\nAdditional Instructions: {self.config.instructions}")
 
         # Add reasoning-specific guidance based on style
@@ -309,11 +323,19 @@ class SingleShotBuilder(ConversationBuilder):
                 )
 
         # Add explicit structure requirement
-        prompt_parts.append(
-            "\nIMPORTANT: Generate the conversation messages array starting with a 'user' message "
-            "(the user's question or request), followed by an 'assistant' message (the response). "
-            "Do NOT include any 'system' role messages - those are added separately."
-        )
+        if requested is None:
+            prompt_parts.append(
+                "\nIMPORTANT: Generate the conversation messages array starting with a 'user' message "
+                "(the user's question or request), followed by an 'assistant' message (the response). "
+                "Do NOT include any 'system' role messages - those are added separately."
+            )
+        else:
+            prompt_parts.append(
+                f"\nGenerate {requested} diverse groups of user and assistant messages. "
+                "Return an object with an 'items' list of complete conversations. "
+                "Each conversation starts with a user request and ends with the assistant's reply. "
+                "Do not generate system messages; these are added in code."
+            )
 
         return "\n".join(prompt_parts)
 

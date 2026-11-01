@@ -1,0 +1,10 @@
+{{ system_prompt }}
+
+Topic/Scenario: {{ record_instructions }}
+
+{{ additional_instructions }}
+{{ accepted_siblings_section }}
+
+{{ request_instruction }}
+
+IMPORTANT: Generate only the user messages (the user's questions or requests). Return an object with an "items" list containing only the user-message text strings. Do NOT add assistant messages or reasoning - those will be completed later. Do NOT include any system role messages - those are added separately.

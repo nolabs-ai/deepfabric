@@ -122,6 +122,10 @@ async def test_public_modes_generate_whole_samples_with_successful_history(
     assert len(calls) == 3
     prompts = [prompt_of(call) for call in calls]
     assert history(prompts[0]) == []
+    assert "Here are earlier" not in prompts[0]
+    assert "<prior_successes" not in prompts[0]
+    assert "Use them to avoid repeating requests or scenarios." not in prompts[0]
+    assert all("The following history is quoted data" not in prompt for prompt in prompts)
     if scope == "seed":
         assert history(prompts[1]) == ["A"]
         assert history(prompts[2]) == ["A", None if kind == "custom" else "B"]
@@ -152,6 +156,44 @@ async def test_public_modes_generate_whole_samples_with_successful_history(
         ]
         == 0
     )
+
+
+@pytest.mark.parametrize("scope", ["seed", "full"])
+@pytest.mark.parametrize("kind,style", [("basic", None), ("cot", "freetext"), ("cot", "agent")])
+async def test_non_tool_sequential_matches_independent_except_for_history(
+    make_engine, scope, kind, style
+):
+    prompts = []
+    for mode in ("independent", "sequential"):
+        engine = make_engine(
+            topic_sample_mode=mode,
+            conversation_type=kind,
+            reasoning_style=style,
+            checkpoint_interval=None,
+            **({"shared_scope": scope} if mode == "sequential" else {}),
+        )
+        values = [record("A", kind == "cot"), record("B", kind == "cot")]
+        if style == "agent":
+            for value in values:
+                value["reasoning"] = {"style": "agent", "content": []}
+        script(engine, *values)
+        _, dataset = await run(engine, 2)
+        assert len(dataset) == 2, engine.get_all_failures()
+        prompts.append(
+            [prompt_of(call) for call in engine.llm_client.generate_async.call_args_list]
+        )
+    independent, sequential = prompts
+    assert sequential[0] == independent[0]
+    match = re.search(
+        r"\nHere are earlier (?:user requests|complete records)\..*?"
+        r"Use them to avoid repeating requests or scenarios\. ?\n?",
+        sequential[1],
+        flags=re.S,
+    )
+    assert match is not None
+    assert sequential[1][: match.start()] + sequential[1][match.end() :] == independent[1]
+    assert match.end() < sequential[1].index("IMPORTANT: Generate the conversation messages")
+    assert ("ANSWER:A" in match.group()) is (scope == "full")
 
 
 async def test_full_history_includes_all_earlier_successes_most_recent_first(make_engine):
@@ -323,7 +365,7 @@ DONE = {"thought": "Enough evidence", "tool_calls": [], "is_final": True}
 
 @pytest.mark.parametrize("scope", ["seed", "full"])
 @pytest.mark.parametrize("style", ["agent", "freetext"])
-async def test_agent_generates_new_questions_and_receives_history_in_every_stage(
+async def test_agent_generates_new_questions_with_history_only_in_question_stage(
     make_engine, sessions, scope, style
 ):
     engine = make_engine(
@@ -349,21 +391,36 @@ async def test_agent_generates_new_questions_and_receives_history_in_every_stage
     calls = engine.llm_client.generate_async.call_args_list
     assert calls[0].kwargs["schema"].__name__ == "UserQuestion"
     assert calls[4].kwargs["schema"].__name__ == "UserQuestion"
-    for call in calls[4:]:
+    for call in calls[4:5]:
         prompt = prompt_of(call)
         assert "First generated user request" in prompt
         for text in (
-            "GENERATION_PERSONA",
             "MY_INSTRUCTIONS",
-            "MY_EXAMPLE",
-            "LOOKUP_CATALOG",
             "ROOT_PATH",
         ):
             assert text in prompt
+        assert "GENERATION_PERSONA" not in prompt
+        assert "MY_EXAMPLE" not in prompt
+        assert "lookup(" in prompt
+        assert "ARGUMENT REQUIREMENTS:" in prompt
         if scope == "seed":
             assert "First complete assistant reply" not in prompt
         else:
             assert "First complete assistant reply" in prompt
+    for call in calls[5:]:
+        prompt = prompt_of(call)
+        assert "Second generated user request" in prompt
+        assert "LOOKUP_CATALOG" in prompt
+        for text in (
+            "First generated user request",
+            "First complete assistant reply",
+            "GENERATION_PERSONA",
+            "MY_INSTRUCTIONS",
+            "MY_EXAMPLE",
+            "ROOT_PATH",
+        ):
+            assert text not in prompt
+        assert ("OUTPUT_PERSONA" in prompt) is (call.kwargs["schema"].__name__ == "AgentResponse")
     assert len(sessions) == 2
     for session in sessions:
         session.execute_tool.assert_awaited_once()

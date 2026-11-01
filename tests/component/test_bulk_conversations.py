@@ -12,6 +12,7 @@ import pytest
 
 from datasets import Dataset as HFDataset
 
+from deepfabric.builders import SingleShotBuilder
 from deepfabric.exceptions import DataSetGeneratorError
 from deepfabric.generator import DataSetGenerator
 from deepfabric.progress import ProgressReporter
@@ -106,7 +107,35 @@ async def test_full_conversations_keep_reasoning_persona_and_slot_identities(mak
     assert "Generation persona" in prompt and "Dataset persona" not in prompt
     assert "Do not generate system messages" in prompt
     if cot:
-        assert "reasoning trace" in prompt and "freetext" in prompt
+        assert "REASONING FORMAT" in prompt and "string format" in prompt
+
+
+@pytest.mark.parametrize("kind,style", [("basic", None), ("cot", "freetext"), ("cot", "agent")])
+@pytest.mark.parametrize("requested", [1, 3])
+def test_bulk_full_uses_independent_framing_with_collection_instruction(
+    make_engine, kind, style, requested
+):
+    engine = make_engine(
+        conversation_type=kind,
+        reasoning_style=style,
+        instructions="Keep concrete values such as {value}.",
+    )
+    allocation = {"path": ["Root requirements", "Child"]}
+    topic_prompt = engine.build_prompt(engine._get_prompt_template(), 0, allocation["path"])
+    independent = SingleShotBuilder(engine.llm_client, engine.config)._build_prompt(topic_prompt)
+    bulk = engine._build_bulk_collection_prompt(allocation, requested, [], 0)
+    expected_prefix = independent.split("\nIMPORTANT: Generate the conversation messages")[0]
+    expected_prefix = expected_prefix.replace("a realistic single q&a", "realistic q&a").replace(
+        "Generate one training sample as question and answer.", ""
+    )
+    assert bulk.split(f"\nGenerate {requested} diverse groups")[0] == expected_prefix
+    assert bulk.endswith(
+        f"Generate {requested} diverse groups of user and assistant messages. "
+        "Return an object with an 'items' list of complete conversations. "
+        "Each conversation starts with a user request and ends with the assistant's reply. "
+        "Do not generate system messages; these are added in code."
+    )
+    assert "Generate one training sample" not in bulk
 
 
 @pytest.mark.parametrize(
