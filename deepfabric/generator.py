@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from datasets import Dataset as HFDataset
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from .builders import ConversationBuilderFactory
+from .builders import ConversationBuilderFactory, SingleShotBuilder
+from .builders_agent import SingleTurnAgentBuilder
 from .bulk import (
     completion_schema,
     estimate_record_tokens,
@@ -51,7 +52,12 @@ from .llm.client import make_dynamic_model
 from .llm.token_usage import TokenUsageTracker, active_token_tracker, track_token_usage
 from .metrics import trace
 from .progress import ProgressReporter
-from .prompt_templates import default_template, render_template, template_manifest
+from .prompt_templates import (
+    compatibility_template,
+    default_template,
+    render_template,
+    template_manifest,
+)
 from .prompts import (
     AGENT_COT_TOOLS_PROMPT,
     BULK_COMPLETION_PROMPT,
@@ -1024,6 +1030,11 @@ class DataSetGenerator:
             if step == "completion" and self.config.output_schema is not None
             else self._single_output_instructions(),
             "record_instructions": self._bulk_record_instructions(),
+            "additional_instructions": (
+                f"Additional Instructions: {self.config.instructions}"
+                if self.config.instructions
+                else ""
+            ),
             "retry_feedback": "",
             "seed_section": "",
         }
@@ -1045,6 +1056,42 @@ class DataSetGenerator:
         if self.tool_registry:
             return default_template("output_single_tools")
         return self._bulk_record_instructions()
+
+    def _build_bulk_agent_question_prompt(
+        self,
+        path: list[str] | None,
+        num_examples: int,
+        *,
+        requested: int | str = 1,
+        request_instruction: str,
+        history_section: str = "",
+        history: list | None = None,
+    ) -> str:
+        """Adapt independent's existing tool-question prompt for seed collection."""
+        values = {
+            "system_prompt": self.generation_prompt,
+            "instructions": self.build_custom_instructions_text(),
+            "examples": self.build_examples_text(num_examples),
+            "subtopics": self.build_subtopics_text(path),
+            "tools_section": self.build_tools_section(),
+            "history_section": history_section,
+            "accepted_siblings_section": history_section,
+            "history": json.dumps(history or [], ensure_ascii=False),
+            "requested": requested,
+            "request_instruction": request_instruction,
+            "output_instructions": 'Generate only the user questions as an object with an "items" list of strings:',
+        }
+        # Preserve independent's existing basic/CoT scenario templates and wrapper.
+        # Adapt only the collection count, output shape and accepted-sibling context.
+        prompt = self._get_prompt_template()
+        for name in ("system_prompt", "instructions", "examples", "subtopics"):
+            prompt = prompt.replace("{{{{" + name + "}}}}", values[name])
+        if history_section:
+            prompt += f"\n{history_section}"
+        prompt = SingleTurnAgentBuilder.build_user_question_prompt(
+            prompt, requested=requested, collection=True, collection_request=request_instruction
+        )
+        return self._apply_prompt_override("seed", prompt, path, num_examples, **values)
 
     def _emit_retry(
         self,
@@ -1867,6 +1914,74 @@ class DataSetGenerator:
             if accepted_siblings
             else ""
         )
+        if seed_scope and self.config.output_schema is None and self.tool_registry:
+            return self._build_bulk_agent_question_prompt(
+                allocation["path"],
+                num_example_demonstrations,
+                requested=requested,
+                request_instruction=request,
+                history_section=siblings,
+                history=accepted_siblings,
+            )
+        if (
+            seed_scope
+            and self.config.output_schema is None
+            and self.config.conversation_type == "cot"
+        ):
+            examples = self.build_examples_text(num_example_demonstrations)
+            scenario = (
+                STRUCTURED_COT_PROMPT
+                if self.config.reasoning_style == "agent"
+                else FREETEXT_COT_PROMPT
+            )
+            # Adapt collection wording without changing independent's template or supplied data.
+            scenario = (
+                scenario.replace(
+                    "Generate a reasoning problem that requires",
+                    "Generate reasoning problems that require",
+                )
+                .replace(
+                    "Generate a training conversation that demonstrates systematic problem-solving.",
+                    "Generate reasoning problems that demonstrate systematic problem-solving.",
+                )
+                .replace(
+                    "Create realistic dialogues where complex problems are solved through methodical reasoning.",
+                    "Create realistic reasoning problems that require methodical reasoning to solve.",
+                )
+            )
+            for name, value in {
+                "instructions": self.build_custom_instructions_text(),
+                "examples": examples,
+                "subtopics": self.build_subtopics_text(allocation["path"]),
+            }.items():
+                scenario = scenario.replace("{{{{" + name + "}}}}", value)
+            return self._format_prompt_step(
+                "seed",
+                compatibility_template("bulk_cot_seed", "format"),
+                allocation,
+                num_example_demonstrations,
+                system_prompt=self.generation_prompt,
+                instructions=self.build_custom_instructions_text(),
+                examples=examples,
+                subtopics=self.build_subtopics_text(allocation["path"]),
+                record_instructions=scenario,
+                additional_instructions=(
+                    f"Additional Instructions: {self.config.instructions}"
+                    if self.config.instructions
+                    else ""
+                ),
+                accepted_siblings_section=siblings,
+                request_instruction=request,
+                requested=requested,
+                history=json.dumps(accepted_siblings, ensure_ascii=False),
+                history_section=siblings,
+                tools_section="",
+                output_instructions=default_template("output_seed_conversation"),
+            )
+        if seed_scope and self.config.output_schema is None and self.config.instructions:
+            # Match the other sample modes for now, including repeated instructions.
+            # Prompt repetition will be addressed separately.
+            request += f"\n\nAdditional Instructions: {self.config.instructions}"
         common = {
             "request_instruction": request,
             "system_prompt": self.generation_prompt,
@@ -1876,6 +1991,29 @@ class DataSetGenerator:
             "accepted_siblings_section": siblings,
             "tools_section": self.build_tools_section(),
         }
+        if not seed_scope and self.config.output_schema is None and not self.tool_registry:
+            # Keep independent framing without conflicting single-sample requirements.
+            template = self._get_prompt_template().replace(
+                "a realistic single q&a", "realistic q&a"
+            )
+            template = template.replace("Generate one training sample as question and answer.", "")
+            topic_prompt = render_template(template, common)
+            if siblings:
+                topic_prompt += f"\n{siblings}"
+            builder = SingleShotBuilder(self.llm_client, self.config)
+            prompt = builder._build_prompt(topic_prompt, requested=requested)
+            return self._apply_prompt_override(
+                "full_sample",
+                prompt,
+                allocation["path"],
+                num_example_demonstrations,
+                **common,
+                requested=requested,
+                history=json.dumps(accepted_siblings, ensure_ascii=False),
+                history_section=siblings,
+                record_instructions=self._bulk_record_instructions(),
+                output_instructions=self._bulk_record_instructions(),
+            )
         template = (
             (
                 BULK_SEED_SAMPLE_PROMPT
@@ -2158,21 +2296,29 @@ class DataSetGenerator:
         self, allocation: dict, seed: str, num_example_demonstrations: int
     ) -> str:
         agent = bool(self.config.tool_components or self.config.custom_tools)
+        template = BULK_CONVERSATION_COMPLETION_PROMPT
         if agent:
             output = default_template("output_completion_agent")
         elif self.config.conversation_type == "cot":
             style = self.config.reasoning_style or "freetext"
-            content = "a plain string" if style == "freetext" else "a list of reasoning steps"
-            output = render_template(
-                default_template("output_completion_reasoning"),
-                {"style": style, "content": content},
+            template = compatibility_template("bulk_cot_completion", "format")
+            output = default_template(
+                "freetext_cot_completion_format"
+                if style == "freetext"
+                else "structured_cot_completion_format"
+            ).strip()
+            output += (
+                "\n\nIMPORTANT: Generate and return only the 'assistant' message (the response). "
+                "Do NOT reproduce a user turn or a message array. "
+                "Do NOT include any 'system' role messages - those are added separately."
             )
         else:
             output = default_template("output_completion_basic")
-        output += default_template("output_completion_pinned")
+        if agent or self.config.conversation_type != "cot":
+            output += default_template("output_completion_pinned")
         return self._format_prompt_step(
             "completion",
-            BULK_CONVERSATION_COMPLETION_PROMPT,
+            template,
             allocation,
             num_example_demonstrations,
             seed=json.dumps(seed, ensure_ascii=False),
@@ -2180,16 +2326,17 @@ class DataSetGenerator:
             seed_section=(
                 ""
                 if agent
-                else f"<pinned_user_request>\n{json.dumps(seed, ensure_ascii=False)}\n</pinned_user_request>"
+                else "Here is the user request you should answer:\n"
+                f"<pinned_user_request>\n{json.dumps(seed, ensure_ascii=False)}\n</pinned_user_request>"
             ),
             output_instructions=output,
             subtopics=self.build_subtopics_text(allocation["path"])
             if self.config.completion_includes_topic_path
             else "",
-            context_guidance=self._completion_context_guidance(),
             instructions=self.build_custom_instructions_text(),
             examples=self.build_examples_text(num_example_demonstrations),
             tools_section="" if agent else self.build_tools_section(),
+            context_guidance="",
         )
 
     def _validate_pinned_conversation(
@@ -2453,7 +2600,14 @@ class DataSetGenerator:
                         tool_registry=self.tool_registry,
                         progress_reporter=self.progress_reporter,
                     )
-                    conversation = await builder.generate(prompt, error)
+                    if isinstance(builder, SingleShotBuilder):
+                        conversation = await builder.generate(
+                            prompt,
+                            error,
+                            prompt_step="sequential_later" if ordinal > 0 else "full_sample",
+                        )
+                    else:
+                        conversation = await builder.generate(prompt, error)
                     messages = conversation.messages[int(include_sys_msg) :]
                     if (
                         len(messages) < 2  # noqa: PLR2004 - request and reply
@@ -2571,8 +2725,18 @@ class DataSetGenerator:
                     "history": json.dumps(history, ensure_ascii=False),
                 },
             )
+        step = "sequential_later" if (bool(history) if later is None else later) else "full_sample"
+        if self.config.output_schema is None:
+            return self.build_prompt(
+                self._get_prompt_template(),
+                num_example_demonstrations,
+                allocation["path"],
+                prompt_step=step,
+                history_section=history_section,
+                history=history,
+            )
         return self._format_prompt_step(
-            "sequential_later" if (bool(history) if later is None else later) else "full_sample",
+            step,
             SEQUENTIAL_SAMPLE_PROMPT,
             allocation,
             num_example_demonstrations,
@@ -3081,14 +3245,26 @@ class DataSetGenerator:
         data_creation_prompt: str,
         num_example_demonstrations: int,
         subtopics_list: list[str] | None = None,
+        *,
+        prompt_step: str = "full_sample",
+        history_section: str = "",
+        history: list | None = None,
     ) -> str:
         prompt = data_creation_prompt.replace("{{{{system_prompt}}}}", self.generation_prompt)
         prompt = prompt.replace("{{{{instructions}}}}", self.build_custom_instructions_text())
         examples = self.build_examples_text(num_example_demonstrations)
         prompt = prompt.replace("{{{{examples}}}}", examples)
         prompt = prompt.replace("{{{{subtopics}}}}", self.build_subtopics_text(subtopics_list))
+        if history_section:
+            prompt += f"\n{history_section}"
         return self._apply_prompt_override(
-            "full_sample", prompt, subtopics_list, num_example_demonstrations, examples=examples
+            prompt_step,
+            prompt,
+            subtopics_list,
+            num_example_demonstrations,
+            examples=examples,
+            history_section=history_section,
+            history=json.dumps(history or [], ensure_ascii=False),
         )
 
     def build_system_prompt(self):
@@ -3155,9 +3331,7 @@ class DataSetGenerator:
 
         # Handle chain of thought conversations
         if self.config.conversation_type == "cot":
-            # Agent mode with tools - use agent prompts (implicit when tools configured)
             if self.tool_registry:
-                # Use agent prompt for single-turn tool calling
                 return (
                     AgentPromptBuilder.build_tool_context_prompt(
                         self.tool_registry,
@@ -3165,7 +3339,6 @@ class DataSetGenerator:
                     )
                     or AGENT_COT_TOOLS_PROMPT
                 )
-
             # Non-agent CoT - select based on reasoning style
             if self.config.reasoning_style == "freetext":
                 return FREETEXT_COT_PROMPT

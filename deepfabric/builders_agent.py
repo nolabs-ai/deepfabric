@@ -10,6 +10,7 @@ from .builders import ConversationBuilder, pinned_user_copy
 from .constants import DEFAULT_SAMPLE_RETRIES
 from .exceptions import DataSetGeneratorError
 from .progress import ProgressReporter
+from .prompt_templates import default_template, render_template
 from .schemas import (
     AgentContext,
     AgentStep,
@@ -128,7 +129,7 @@ class SingleTurnAgentBuilder(ConversationBuilder):
 
         # Track seen tool signatures to skip duplicates
         self._seen_tool_signatures: set[str] = set()
-        self._completion_context: str | None = None
+        self._coordinated_generation = False
 
         # Initialize Spin client if endpoint is configured
         spin_endpoint = getattr(config, "spin_endpoint", None)
@@ -170,10 +171,9 @@ class SingleTurnAgentBuilder(ConversationBuilder):
         Raises:
             ValueError: If generation fails at any step
         """
-        self._completion_context = (
-            topic_prompt
-            if pinned_user_message is not None or self.config.topic_sample_mode == "sequential"
-            else None
+        # Coordination affects retry ownership and output formatting, not agent prompts.
+        self._coordinated_generation = (
+            pinned_user_message is not None or self.config.topic_sample_mode == "sequential"
         )
         try:
             # Initialize Spin session if configured
@@ -234,11 +234,11 @@ class SingleTurnAgentBuilder(ConversationBuilder):
                 user_message, all_steps, all_tool_results, agent_response, topic_prompt
             )
         finally:
-            # Always clean up the session and request-scoped completion framing.
+            # Always clean up the session and request-scoped coordination state.
             try:
                 await self._cleanup_spin_session()
             finally:
-                self._completion_context = None
+                self._coordinated_generation = False
 
     async def _ensure_spin_session(self) -> None:
         """Initialize Spin session if configured."""
@@ -266,16 +266,32 @@ class SingleTurnAgentBuilder(ConversationBuilder):
             await self._spin_session.cleanup()
             self._spin_session = None
 
-    async def _generate_user_question(self, topic_prompt: str) -> ChatMessage:
-        """Generate the user's question for this scenario.
-
-        Args:
-            topic_prompt: The scenario topic
-
-        Returns:
-            User message (typed ChatMessage)
-        """
-        prompt = f"""Generate a short, natural user question for this scenario:
+    @staticmethod
+    def build_user_question_prompt(
+        topic_prompt: str,
+        *,
+        requested: int | str = 1,
+        collection: bool = False,
+        collection_request: str | None = None,
+    ) -> str:
+        """Keep independent question framing; vary only collection count/output."""
+        opening = (
+            collection_request
+            or render_template(
+                default_template(
+                    f"request_bulk_conversation_{'single' if requested == 1 else 'plural'}"
+                ),
+                {"requested": requested},
+            )
+            if collection
+            else "Generate a short, natural user question for this scenario:"
+        )
+        output = (
+            'Generate only the user questions as an object with an "items" list of strings:'
+            if collection
+            else "Generate only the user's question:"
+        )
+        return f"""{opening}
 {topic_prompt}
 
 Requirements:
@@ -286,11 +302,20 @@ Requirements:
 
 Example format: "Can you tell me the weather in Paris tomorrow and suggest what to wear?"
 
-Generate only the user's question:"""
+{output}"""
 
+    async def _generate_user_question(self, topic_prompt: str) -> ChatMessage:
+        """Generate the user's question for this scenario.
+
+        Args:
+            topic_prompt: The scenario topic.
+
+        Returns:
+            User message (typed ChatMessage)
+        """
         # Always use non-streaming for reliable structured output
         response = await self.llm.generate_async(
-            prompt=prompt,
+            prompt=self.build_user_question_prompt(topic_prompt),
             schema=UserQuestion,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
@@ -329,7 +354,7 @@ Generate only the user's question:"""
         # Coordinated generation has one outer slot budget; do not multiply it here.
         max_retries = (
             0
-            if self._completion_context is not None
+            if self._coordinated_generation
             else getattr(self.config, "sample_retries", DEFAULT_SAMPLE_RETRIES)
         )
         last_error: Exception | None = None
@@ -384,8 +409,6 @@ Generate only the user's question:"""
             "What is your next step?",
         ]
 
-        if self._completion_context is not None:
-            prompt_parts.insert(0, f"## Completion Context\n{self._completion_context}\n")
         if error_feedback:
             prompt_parts.insert(
                 -1,
@@ -598,12 +621,7 @@ Generate only the user's question:"""
         if context:
             context_section = f"Previous conversation:\n{context}\n\n"
 
-        framing = (
-            self._completion_context
-            if self._completion_context is not None
-            else self.config.dataset_system_prompt
-        )
-        prompt = f"""{framing}
+        prompt = f"""{self.config.dataset_system_prompt}
 
 Available tools:
 {tools_info}
@@ -723,8 +741,7 @@ Remember: You have access to the tools listed above and have used them in this c
             style=self.config.reasoning_style or "agent",  # type: ignore
             content=(
                 "\n".join(step.thought for step in reasoning_steps)
-                if self._completion_context is not None
-                and self.config.reasoning_style == "freetext"
+                if self._coordinated_generation and self.config.reasoning_style == "freetext"
                 else reasoning_steps
             ),
         )
