@@ -145,6 +145,10 @@ Controls sample generation.
 | `max_retries` | int | 3 | Retries on API failures |
 | `sample_retries` | int | 2 | Retries on validation failures |
 | `max_tokens` | int | 2000 | Base output-token allowance; bulk collection calls scale by requested item count |
+| `topic_sample_mode` | string | "independent" | `independent`, `sequential` or `bulk`; see [Sample Generation Modes](sampling-modes.md) |
+| `shared_scope` | string | "seed" | `seed` or `full`; set only for sequential/bulk |
+| `seed_field` | string | - | Required top-level custom-schema field shared in seed scope |
+| `completion_includes_topic_path` | bool | false | Add ancestry to non-tool bulk/seed completion |
 | `bulk.max_tokens_per_call` | int or null | null | Explicit positive ceiling for a bulk collection call; requires bulk mode |
 | `output_schema` | object | - | Custom JSON Schema for structured output (see below) |
 | `llm` | object | - | Override shared LLM settings |
@@ -155,8 +159,11 @@ Override sample framing with `generation.prompt_templates.full_sample`, `.sequen
 `.seed`, or `.completion`, using inline text or `{file: path}`. See [Prompt Templates](prompt-templates.md)
 for placeholders, per-step selection and reproducible prompt experiments.
 
-Bulk collection calls default to `max_tokens × requested items`; set `generation.bulk.max_tokens_per_call` to override the per-call ceiling.
-In seed mode, seed generation and sample completion have separate budgets: the seed collection uses the bulk ceiling, and each sample completion uses `max_tokens`. Resolved budgets are shown before collection calls.
+See [Sample Generation Modes](sampling-modes.md) for independent, sequential and bulk behavior,
+scope examples, tool restrictions and retry handling.
+
+Bulk collection budgets default to `max_tokens × requested items`.
+`bulk.max_tokens_per_call` overrides this ceiling; individual seed completions retain `max_tokens`.
 
 #### generation.output_schema (Custom Structured Output)
 
@@ -185,8 +192,8 @@ output:
 Set `output.format: custom` alongside it to document the intent in your config — see the `output` section below for how `format` is used.
 
 !!! warning "Limitations"
-    - **No field-level validation.** DeepFabric confirms the model's response is valid JSON but does not check it against `required`, types, `enum`, or nested `properties` in your schema. Malformed or incomplete-but-valid JSON will pass through into the dataset.
-    - **No example demonstrations.** Unlike the standard conversation prompts, the custom-schema prompt does not support `generation.example_data`; example demonstrations have no effect in this mode.
+    - **Validation differs by path.** Bulk and sequential apply explicit record validation. Independent uses a generated model and provider structured output; verify representative results against your full schema.
+    - **Examples are supplied through the Python API.** Custom-schema prompts can include configured `example_data`; `generation.example_data` is not a YAML setting.
     - **Constrained decoding depends on the provider.** OpenAI, OpenRouter, Ollama, and local providers enforce the schema via [Outlines](https://github.com/dottxt-ai/outlines); Gemini and Anthropic use their native structured-output APIs. Enforcement quality varies by provider and model.
     - **No CLI override.** `output_schema` can only be set via YAML config or the Python API (`DataSetGenerator(output_schema={...}, ...)`); there is no `--output-schema` flag.
     - **Retries follow the same validation-error heuristics** as normal generation (`sample_retries`). If a schema-related error isn't recognized as a validation error, it fails immediately instead of retrying.
@@ -199,7 +206,9 @@ Set `output.format: custom` alongside it to document the intent in your config �
 | `reasoning_style` | string | freetext, agent | For cot only |
 
 !!! note "Agent Mode"
-    Agent mode is automatically enabled when tools are configured. No explicit `agent_mode` setting is required.
+    Tools enable the ReAct agent flow. Independent, sequential and bulk/seed are supported;
+    bulk/full is not. Topic and sibling context guide question generation; ReAct and final-answer
+    prompts share the independent framing. See [Sample Generation Modes](sampling-modes.md).
 
 #### generation.tools
 
@@ -260,7 +269,7 @@ Controls final dataset.
 
     Samples are allocated in the existing topic order using `base, remainder = divmod(target, topic_count)`. The first `remainder` topics receive `base + 1` slots and the rest receive `base`. With 50 topics and target 120, the first 20 topics receive 3 samples and the remaining 30 receive 2. Zero-quota topics are skipped.
 
-    The target is independent of `batch_size`: target 25 with batch size 10 still allocates 25 slots. Samples use independent requests; previously generated siblings are not included in later prompts.
+    The target is independent of `batch_size`: target 25 with batch size 10 still allocates 25 slots. Independent mode shares no earlier samples; sequential and bulk modes coordinate samples within each topic.
 
 #### output.checkpoint (Optional)
 

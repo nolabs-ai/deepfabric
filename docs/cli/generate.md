@@ -61,12 +61,9 @@ deepfabric generate config.yaml --topics-load existing_topics.jsonl
 !!! tip "Faster Iteration"
     This approach accelerates iteration when experimenting with dataset generation parameters while keeping the topic structure constant.
 
-For complete-record bulk generation, set `generation.topic_sample_mode: bulk` and
-`generation.shared_scope: full`, without `seed_field`. This supports generation
-without tools. Each call requests the remaining records for one topic; choose
-`max_tokens` to fit that collection, since the budget does not expand automatically.
-Sequential full scope generates one complete record per call and shares earlier
-complete records as history.
+See [Sample Generation Modes](../dataset-generation/sampling-modes.md) to choose independent,
+sequential, bulk/seed or bulk/full generation. Bulk collection budgets scale by the number
+requested unless `generation.bulk.max_tokens_per_call` supplies a fixed ceiling.
 
 ## Topic-Only Generation
 
