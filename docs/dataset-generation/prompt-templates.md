@@ -33,6 +33,10 @@ template rather than changing installed defaults. Replace its
 
 ## Steps and sources
 
+Custom non-tool conversation templates supply the complete prompt; include any required
+message/CoT guidance yourself. Retry feedback, schema validation and exported system messages
+remain managed by DeepFabric. Omitted overrides keep the built-in framing.
+
 `generation.prompt_templates` accepts four independent overrides:
 
 | Key | Used for |
@@ -125,6 +129,7 @@ Full-sample, sequential-later and seed templates additionally accept:
 | `history` | JSON array of earlier successful records or seed values; `[]` when empty |
 | `history_section` | Formatted history/accepted-sibling section; empty on the first call |
 | `accepted_siblings_section` | Bulk accepted-sibling section; empty outside bulk or without accepted siblings |
+| `additional_instructions` | Additional-instructions label and configured text, or empty; used after CoT collection context |
 | `seed_field` | JSON-quoted configured seed-field name, or empty without one |
 | `scope` | Configured `seed` or `full` sharing scope |
 
@@ -135,7 +140,7 @@ Completion templates additionally accept:
 | `seed` | JSON-encoded pinned seed value/user request |
 | `seed_field` | JSON-quoted custom-schema seed-field name, or empty for conversations |
 | `seed_section` | Default pinned-seed/user-request section; empty where the builder pins the request separately |
-| `context_guidance` | Default guidance about supplied topic context versus pinned-seed context |
+| `context_guidance` | Custom-schema guidance about supplied topic context versus pinned-seed context; empty for conversation completion |
 | `output_instructions` | Default completion-output guidance |
 | `retry_feedback` | Current custom-schema validation feedback, or empty |
 
@@ -148,9 +153,9 @@ context without changing the compatibility flag.
 Templates change text, not API message roles. `generation.system_prompt` remains
 inline prompt content; this feature does not add API system-role delivery.
 `output.system_prompt` and `output.include_system_message` continue to control
-exported training messages. Conversation/agent builders retain their existing
-request stages and message roles; a completion override customizes their supplied
-scenario framing rather than replacing the entire tool loop.
+exported training messages. For tool agents, whole-sample and seed overrides affect question
+generation. Completion overrides currently do not change the fixed ReAct/final-answer prompts;
+use non-tool conversation or custom-schema completion overrides to customize those completion calls.
 
 ## Topic generation and expansion
 

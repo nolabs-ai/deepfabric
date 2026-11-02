@@ -1,6 +1,6 @@
 # Agent Datasets
 
-Agent datasets train models to use tools. DeepFabric uses single-turn agent mode where the model generates complete tool workflows in one assistant response, following a ReAct pattern.
+Agent datasets train models to use tools. Each sample starts with one user request, runs a ReAct decision/tool loop, then generates a final answer. The saved conversation includes assistant tool calls and tool-result messages.
 
 !!! warning "Prerequisites"
     Agent datasets require the Spin tool service. See [Tools](../tools/index.md) for setup, or just use Docker:
@@ -17,7 +17,7 @@ Agent datasets train models to use tools. DeepFabric uses single-turn agent mode
 
 ## Agent Configuration
 
-Agent mode is automatically enabled when tools are configured. Create complete tool workflows with reasoning in a single response:
+Agent mode is automatically enabled when tools are configured:
 
 ```yaml title="config.yaml"
 topics:
