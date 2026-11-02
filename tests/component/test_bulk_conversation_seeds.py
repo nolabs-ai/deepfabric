@@ -9,8 +9,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from jsonschema import validate
+from outlines.models.openai import AsyncOpenAI
+
 from deepfabric.builders import SingleShotBuilder
 from deepfabric.builders_agent import SingleTurnAgentBuilder
+from deepfabric.llm.client import AnthropicModel, GeminiModel, LLMClient
 from tests.support import bulk_conversation_seeds as _support
 from tests.support.bulk_conversation_seeds import FINAL_STEP, TOOL, TOOL_STEP, script
 
@@ -178,11 +182,6 @@ async def test_partial_invalid_seeds_and_slot_retry_isolation(make_engine):
 @pytest.mark.parametrize("provider", ["openai", "openrouter", "ollama", "anthropic", "gemini"])
 @pytest.mark.parametrize("kind", ["basic", "cot"])
 async def test_assistant_schema_through_real_adapters(make_engine, provider, kind):
-    from jsonschema import validate  # noqa: PLC0415
-    from outlines.models.openai import AsyncOpenAI  # noqa: PLC0415
-
-    from deepfabric.llm.client import AnthropicModel, GeminiModel, LLMClient  # noqa: PLC0415
-
     sent = []
 
     def response(schema):

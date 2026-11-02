@@ -10,9 +10,14 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from jsonschema import validate
+from outlines.models.openai import AsyncOpenAI
+
 from deepfabric.exceptions import DataSetGeneratorError
 from deepfabric.generator import DataSetGenerator
+from deepfabric.llm.client import AnthropicModel, GeminiModel, LLMClient
 from deepfabric.progress import ProgressReporter
+from deepfabric.schemas import Conversation
 
 SCHEMA = {
     "type": "object",
@@ -463,12 +468,6 @@ async def test_agent_retry_is_whole_sample_with_new_question_and_fresh_session(
 @pytest.mark.parametrize("provider", ["openai", "openrouter", "ollama", "anthropic", "gemini"])
 @pytest.mark.parametrize("custom", [False, True])
 async def test_whole_sample_schemas_through_real_provider_adapters(make_engine, provider, custom):
-    from jsonschema import validate  # noqa: PLC0415
-    from outlines.models.openai import AsyncOpenAI  # noqa: PLC0415
-
-    from deepfabric.llm.client import AnthropicModel, GeminiModel, LLMClient  # noqa: PLC0415
-    from deepfabric.schemas import Conversation  # noqa: PLC0415
-
     sent = []
 
     def response(schema):
