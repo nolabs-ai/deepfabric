@@ -109,3 +109,22 @@ def test_checkpoint_path_option_overrides_configured_path(tmp_path):
     )
 
     assert seen == {"topics_load": str(topics_file), "checkpoint_dir": str(override_dir)}
+
+
+def test_resume_with_output_override_finds_checkpoint_named_after_config_output(tmp_path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    topics_file = tmp_path / "saved-topics.jsonl"
+    topics_file.write_text('{"path": ["root", "leaf"]}\n')
+    # The engine names checkpoint files after output.save_as from the config ("dataset")
+    write_checkpoint_metadata(checkpoint_dir, topics_file)
+
+    seen = invoke_generate(
+        [
+            str(config_file(tmp_path, checkpoint_dir)),
+            "--resume",
+            "--output-save-as",
+            str(tmp_path / "other.jsonl"),
+        ]
+    )
+
+    assert seen == {"topics_load": str(topics_file), "checkpoint_dir": str(checkpoint_dir)}
