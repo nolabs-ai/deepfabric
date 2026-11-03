@@ -6,6 +6,7 @@ import os
 import traceback
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from .config import DeepFabricConfig
 from .config_manager import DEFAULT_MODEL
 from .exceptions import ConfigurationError
 from .generator import DataSetGenerator
+from .output_safety import save_output
 from .progress import ProgressReporter
 from .tui import STREAM_PANEL_WIDTH, get_dataset_tui, get_tui
 from .utils import ensure_not_running_loop
@@ -754,7 +756,7 @@ def _save_failed_samples(
     failed_samples: list,
     tui,
     use_path_directly: bool = False,
-) -> None:
+) -> str:
     """Save failed samples to a file.
 
     Args:
@@ -770,12 +772,12 @@ def _save_failed_samples(
         failures_path = save_path
     else:
         # Generate timestamped filename: my-dataset.jsonl -> my-dataset_failures_20231130_143022.jsonl
-        base_path = save_path.rsplit(".", 1)[0] if "." in save_path else save_path
+        base_path = str(Path(save_path).with_suffix(""))
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         failures_path = f"{base_path}_failures_{timestamp}.jsonl"
 
-    try:
-        with open(failures_path, "w") as f:
+    def write_failures(destination):
+        with open(destination, "w", encoding="utf-8") as f:
             for idx, failure in enumerate(failed_samples):
                 # Structure each failure as a JSON object with metadata
                 failure_record = {
@@ -791,9 +793,18 @@ def _save_failed_samples(
                     # Legacy format: plain string or other type
                     failure_record["error"] = str(failure)
                 f.write(json.dumps(failure_record) + "\n")
-        tui.warning(f"Failed samples saved to: {failures_path} ({len(failed_samples)} failures)")
-    except Exception as e:
-        tui.error(f"Could not save failed samples: {str(e)}")
+
+    actual = save_output(failures_path, write_failures)
+    tui.warning(f"Failed samples saved to: {actual} ({len(failed_samples)} failures)")
+    return actual
+
+
+@dataclass(frozen=True)
+class DatasetSaveResult:
+    """Actual export paths, including a renamed explicit failure destination."""
+
+    dataset_path: str
+    failures_path: str | None = None
 
 
 def save_dataset(
@@ -802,7 +813,9 @@ def save_dataset(
     config: DeepFabricConfig | None = None,
     engine: DataSetGenerator | None = None,
     failures_path: str | None = None,
-) -> None:
+    *,
+    replace: bool = False,
+) -> DatasetSaveResult:
     """
     Save dataset to file.
 
@@ -812,16 +825,23 @@ def save_dataset(
         config: Optional configuration for upload settings
         engine: Optional DataSetGenerator to save failed samples from
         failures_path: Optional explicit path for failures file (overrides auto-generated path)
+        replace: Replace the dataset only after successful serialization.
+
+    Returns:
+        Actual dataset and optional failure-export paths; collisions may add suffixes.
 
     Raises:
         ConfigurationError: If saving fails
     """
     tui = get_tui()
+    saved_failures_path = None
     try:
         # Save the dataset as JSONL, stripping null values injected by HF Dataset
         # HuggingFace Dataset's Arrow schema adds null for missing fields across rows,
         # but we want clean output without null values for optional fields
-        _save_jsonl_without_nulls(dataset, save_path)
+        save_path = save_output(
+            save_path, lambda path: _save_jsonl_without_nulls(dataset, path), replace=replace
+        )
         tui.success(f"Dataset saved to: {save_path}")
 
         # Save failed samples if engine has any (including flushed to checkpoint)
@@ -830,7 +850,7 @@ def save_dataset(
             if all_failures:
                 # Use explicit failures_path if provided, otherwise auto-generate from save_path
                 actual_failures_path = failures_path or save_path
-                _save_failed_samples(
+                saved_failures_path = _save_failed_samples(
                     actual_failures_path, all_failures, tui, use_path_directly=bool(failures_path)
                 )
 
@@ -846,3 +866,5 @@ def save_dataset(
 
     except Exception as e:
         raise ConfigurationError(f"Error saving dataset: {str(e)}") from e
+    else:
+        return DatasetSaveResult(save_path, saved_failures_path)

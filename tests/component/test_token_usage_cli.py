@@ -196,7 +196,7 @@ def test_report_cannot_overwrite_input_or_dataset(tmp_path, target):
     ):
         result = CliRunner().invoke(cli, ["generate", str(path), "--run-report", str(report_path)])
     assert result.exit_code == 1
-    assert "must differ" in result.output
+    assert "aliases another input/output" in result.output
     assert path.read_bytes() == original
     if target == "output":
         assert not report_path.exists()

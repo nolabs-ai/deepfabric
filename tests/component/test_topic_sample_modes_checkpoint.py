@@ -135,6 +135,21 @@ def test_retry_failed_keeps_seed_but_resets_collection_budget(make_engine, retry
     assert again._collection_attempts == {}
 
 
+@pytest.mark.parametrize("deferred", [False, True])
+def test_retry_after_mode_change_discards_reopened_failed_seed(make_engine, deferred):
+    writer = make_engine(topic_sample_mode="bulk")
+    save_state(writer, failure=True)
+    restored = make_engine(topic_sample_mode="independent")
+    assert restored.load_checkpoint(retry_failed=not deferred)
+    if deferred:
+        # Startup preview must not mutate the checkpoint before commitment.
+        assert restored._checkpoint_failures_path.read_text()
+        restored.retry_checkpoint_failures()
+    assert restored._topic_seeds == {"topic": {"0": "accepted"}}
+    assert restored._completed == {("topic", 0)}
+    assert restored._collection_attempts == {}
+
+
 def test_plan_changes_still_reject(make_engine):
     writer = make_engine()
     save_state(writer)

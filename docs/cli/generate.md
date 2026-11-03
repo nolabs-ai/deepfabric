@@ -50,6 +50,8 @@ deepfabric generate config.yaml \
 !!! note "Output Organization"
     These options override the file paths specified in your configuration, useful for organizing outputs by experiment or preventing accidental overwrites.
 
+See [Existing Files and Name Clashes](#existing-files-and-name-clashes) for collision choices and filename suffixes.
+
 ## Loading Existing Topic Structures
 
 Skip topic generation by loading previously generated topic trees or graphs:
@@ -217,16 +219,11 @@ deepfabric generate config.yaml --trace-prompt --verbose
 The trace file location is chosen in this order:
 
 1. `--trace-prompt-file PATH`
-2. `DEEPFABRIC_PROMPT_TRACE_FILE`
-3. `./prompt-trace.jsonl` in your current working directory
+2. `./prompt-trace.jsonl` in your current working directory
 
 ```bash
 deepfabric generate config.yaml --trace-prompt --trace-prompt-file ./inspect.jsonl
 ```
-
-
-Traces are appended to the JSONL file without interrupting the 
-progress display. The parent directory must already exist.
 
 To change topic or sample-generation templates, supply your own inline text or
 template files in YAML. See [prompt templates](../dataset-generation/prompt-templates.md).
@@ -392,6 +389,10 @@ On POSIX systems the displayed default is selected after 20 seconds or immediate
 If no checkpoint is available, `--resume`, `--retry-failed`, and their combination fall back to fresh generation. If an existing checkpoint cannot be loaded (for example a version 4 checkpoint, or metadata damaged by an interrupted write), DeepFabric shows its path and the reason, and offers *Clear checkpoint and start fresh* or *Abort*. Abort is the default and exits with status 1 without changing any files; a version 4 checkpoint can be migrated instead of cleared. If the saved topic graph or tree is missing when resuming, DeepFabric exits with an error asking you to provide the original file via `--topics-load`.
 
 
+Checkpoint choices are collected before topic and dataset choices. See
+[Existing Files and Name Clashes](#existing-files-and-name-clashes) for the full
+decision sequence and when files are cleared.
+
 ## Error Recovery
 
 !!! warning "Partial Failures"
@@ -401,6 +402,32 @@ Generation errors and handled interruptions can also save partial dataset export
 
 ??? tip "Optimizing Generation Performance"
     Balance `batch-size` with your API rate limits and system resources. Larger batches increase throughput but consume more memory and may trigger rate limiting. Start with smaller batches and increase based on your provider's capabilities.
+
+## Existing Files and Name Clashes
+
+Before generation, DeepFabric lists all existing files at the configured paths,
+highlighting each file's identity and showing its full path. Decisions are handled
+in order: **checkpoint → topic graph/tree → dataset output**. All choices are
+collected before any files are deleted; choosing abort leaves existing files
+unchanged.
+
+Similar to [Checkpoint Conflicts](#checkpoint-conflicts), an existing topic or
+dataset output prompts you to choose:
+
+1. **Save this run under a new filename.** (default)
+2. **Clear and start fresh.** Delete only the selected topic or dataset output after all choices are confirmed.
+3. **Abort.** Stop the process and leave existing files unchanged.
+
+When saving under a new `filename.json`, DeepFabric tries `filename.json`, then
+`filename_1.json`, `filename_2.json`, and so on until an unused name is available.
+The exact name is chosen at save time, so a new clash during generation also gets
+a suffix. A validated `--retry-failed` run instead replaces the selected dataset
+after its updated export succeeds, with a terminal notice.
+
+Report and prompt-trace clashes are resolved automatically without a prompt.
+Clearing a topic or dataset output leaves existing reports and prompt traces
+unchanged; their new files receive numeric suffixes on collision. The terminal
+prints the actual filename where each file is saved.
 
 ## Output Validation
 

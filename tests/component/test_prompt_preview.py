@@ -191,7 +191,7 @@ def test_normal_cli_flag_gates_file_and_selects_verbosity(
     ):
         args = ["generate", str(config_file), "--tui", "simple"]
         if trace_enabled:
-            args.append("--trace-prompt")
+            args.extend(["--trace-prompt", "--trace-prompt-file", str(trace_file)])
         if verbose:
             args.append("--verbose")
         result = CliRunner().invoke(cli, args)

@@ -11,6 +11,7 @@ import yaml
 from click.testing import CliRunner
 
 from deepfabric.cli import cli
+from deepfabric.dataset_manager import DatasetSaveResult
 from deepfabric.llm.token_usage import record_usage
 from deepfabric.run_report import RunReport
 from tests.component.test_run_report import make_engine, topics
@@ -61,7 +62,10 @@ def test_checkpoint_cleared_only_when_no_samples_failed(tmp_path, failures):
         patch("deepfabric.cli._initialize_topic_model", return_value=object()),
         patch("deepfabric.cli.DataSetGenerator", return_value=engine),
         patch("deepfabric.cli.create_dataset", return_value=[{"messages": []}] * 2),
-        patch("deepfabric.cli.save_dataset"),
+        patch(
+            "deepfabric.cli.save_dataset",
+            side_effect=lambda _dataset, path, *_args, **_kwargs: DatasetSaveResult(path),
+        ),
         patch("deepfabric.cli.trace"),
         patch("deepfabric.cli._trigger_cloud_upload"),
     ):
@@ -91,7 +95,7 @@ def test_real_checkpoint_accounting_report_handoff(tmp_path, report_mode):
         tracker_snapshots.append(usage)
         if report_mode == "failure":
             raise OSError("report disk error")
-        original_write(report, path, usage, status)
+        return original_write(report, path, usage, status)
 
     args = ["generate", str(config_file(tmp_path))]
     if report_mode != "disabled":
@@ -102,13 +106,16 @@ def test_real_checkpoint_accounting_report_handoff(tmp_path, report_mode):
         patch("deepfabric.cli._initialize_topic_model", side_effect=initialize),
         patch("deepfabric.cli.DataSetGenerator", return_value=engine),
         patch("deepfabric.cli.create_dataset", side_effect=create),
-        patch("deepfabric.cli.save_dataset"),
+        patch(
+            "deepfabric.cli.save_dataset",
+            side_effect=lambda _dataset, path, *_args, **_kwargs: DatasetSaveResult(path),
+        ),
         patch("deepfabric.cli.trace"),
         patch("deepfabric.cli._trigger_cloud_upload"),
         patch.object(RunReport, "write", write),
     ):
         result = CliRunner().invoke(cli, args)
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == (1 if report_mode == "failure" else 0), result.output
     assert "Cumulative recorded token usage" in result.output
     assert "total=48" in result.output
     assert "total=25" in result.output

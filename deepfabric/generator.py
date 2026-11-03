@@ -733,24 +733,20 @@ class DataSetGenerator:
         self._flushed_failures_count = len(failures)
         self._topic_seeds = metadata.get("seeds", {})
         self._collection_attempts = metadata.get("collection_attempts", {})
-        if any(
+        self._checkpoint_modes_changed = any(
             metadata.get(name, default) != getattr(self.config, name)
             for name, default in (
                 ("topic_sample_mode", "independent"),
                 ("shared_scope", "seed"),
                 ("seed_field", None),
             )
-        ):
-            retained_slots = self._completed
-            if retry_failed:
-                retained_slots = retained_slots - {
-                    (failure["topic_id"], failure["sample_ordinal"]) for failure in failures
-                }
+        )
+        if self._checkpoint_modes_changed:
             self._topic_seeds = {
                 topic_id: {
                     ordinal: seed
                     for ordinal, seed in seeds.items()
-                    if (topic_id, int(ordinal)) in retained_slots
+                    if (topic_id, int(ordinal)) in self._completed
                 }
                 for topic_id, seeds in self._topic_seeds.items()
             }
@@ -782,9 +778,19 @@ class DataSetGenerator:
         self._completed.difference_update((f["topic_id"], f["sample_ordinal"]) for f in failures)
         self._checkpoint_failures_path.write_text("", encoding="utf-8")
         self._flushed_failures_count = 0
-        # A deliberate retry starts a fresh collection budget, but keeps pinned seeds.
         for failure in failures:
             self._collection_attempts.pop(failure["topic_id"], None)
+        if self._checkpoint_modes_changed:
+            # Preserve load_checkpoint(True)'s previous mode-change semantics:
+            # failed slots lose their incompatible pinned seeds once reopened.
+            self._topic_seeds = {
+                topic_id: {
+                    ordinal: seed
+                    for ordinal, seed in seeds.items()
+                    if (topic_id, int(ordinal)) in self._completed
+                }
+                for topic_id, seeds in self._topic_seeds.items()
+            }
         self._save_checkpoint_metadata()
 
     def clear_checkpoint(self) -> None:
