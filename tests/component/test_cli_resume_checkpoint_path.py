@@ -2,13 +2,13 @@
 
 import json
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 
 from click.testing import CliRunner
 
-from deepfabric.cli import cli
+from deepfabric.cli import _windows_prompt_with_timeout, cli
 from deepfabric.constants import CHECKPOINT_METADATA_SUFFIX
 
 
@@ -112,3 +112,91 @@ def test_resume_with_output_override_finds_checkpoint_named_after_config_output(
     )
 
     assert seen == {"topics_load": str(topics_file), "checkpoint_dir": str(checkpoint_dir)}
+
+
+def test_implicit_resume_selects_saved_topics_before_topic_stage(tmp_path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    topics_file = tmp_path / "saved-topics.jsonl"
+    topics_file.write_text('{"path": ["root", "leaf"]}\n')
+    write_checkpoint_metadata(checkpoint_dir, topics_file)
+    with patch("deepfabric.cli._prompt_with_timeout", return_value="1") as prompt:
+        seen = invoke_generate([str(config_file(tmp_path, checkpoint_dir))])
+    assert seen["topics_load"] == str(topics_file)
+    prompt.assert_called_once()
+
+
+def test_abort_checkpoint_prompt_does_not_generate_topics(tmp_path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    write_checkpoint_metadata(checkpoint_dir, tmp_path / "missing.jsonl")
+    config = config_file(tmp_path, checkpoint_dir)
+    with (
+        patch("deepfabric.cli.check_for_updates"),
+        patch("deepfabric.cli._validate_api_keys"),
+        patch("deepfabric.cli._prompt_with_timeout", return_value="3"),
+        patch("deepfabric.cli._initialize_topic_model") as topics,
+    ):
+        result = CliRunner().invoke(cli, ["generate", str(config)])
+    assert result.exit_code == 0, result.output
+    topics.assert_not_called()
+
+
+def test_fresh_collision_can_load_existing_topics(tmp_path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    config = config_file(tmp_path, checkpoint_dir)
+    topics = tmp_path / "topics.jsonl"
+    topics.write_text('{"path": ["root", "leaf"]}\n')
+    with patch("deepfabric.cli._prompt_with_timeout", return_value="4"):
+        seen = invoke_generate([str(config)])
+    assert seen["topics_load"] == str(topics)
+    assert topics.read_text() == '{"path": ["root", "leaf"]}\n'
+
+
+def test_startup_does_not_probe_or_create_destination_parents(tmp_path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    config = config_file(tmp_path, checkpoint_dir)
+    destination = tmp_path / "not-created" / "dataset.jsonl"
+    invoke_generate([str(config), "--output-save-as", str(destination)])
+    assert not destination.parent.exists()
+    assert not checkpoint_dir.exists()
+
+
+def test_clear_checkpoint_cannot_delete_the_configuration_input(tmp_path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    original = config_file(tmp_path, checkpoint_dir)
+    aliased_config = checkpoint_dir / f"dataset{CHECKPOINT_METADATA_SUFFIX}"
+    original.rename(aliased_config)
+    before = aliased_config.read_text()
+    with (
+        patch("deepfabric.cli.check_for_updates"),
+        patch("deepfabric.cli._validate_api_keys"),
+        patch("deepfabric.cli._prompt_with_timeout", return_value="2"),
+        patch("deepfabric.cli._initialize_topic_model") as topics,
+    ):
+        result = CliRunner().invoke(cli, ["generate", str(aliased_config)])
+    assert result.exit_code == 1, result.output
+    assert "aliases an input" in result.output
+    assert aliased_config.read_text() == before
+    topics.assert_not_called()
+
+
+def test_windows_collision_prompt_times_out_without_console_input():
+    console = Mock()
+    console.kbhit.return_value = False
+    clock = iter([0, 0, 0, 21])
+    with (
+        patch("deepfabric.cli.msvcrt", console),
+        patch("deepfabric.cli.time", Mock(monotonic=lambda: next(clock))),
+    ):
+        assert _windows_prompt_with_timeout(["1", "2", "3"], "1", 20) == "1"
+
+
+def test_windows_collision_prompt_accepts_explicit_choice():
+    console = Mock()
+    console.kbhit.return_value = True
+    console.getwch.side_effect = ["2", "\r"]
+    with (
+        patch("deepfabric.cli.msvcrt", console),
+        patch("deepfabric.cli.time", Mock(monotonic=lambda: 0)),
+    ):
+        assert _windows_prompt_with_timeout(["1", "2", "3"], "1", 20) == "2"

@@ -1,14 +1,15 @@
 """Run-scoped, opt-in prompt tracing shared by all LLM clients."""
 
 import json
-import os
 
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, TextIO
+
+from ..output_safety import open_unique
 
 
 class PromptPreviewCaptured(BaseException):
@@ -20,6 +21,7 @@ class PromptTrace:
     """Trace the first request for each schema, or every request in verbose mode."""
 
     path: Path | None = None
+    stream: TextIO | None = field(default=None, repr=False)
     verbose: bool = False
     dry_run: bool = False
     seen: set[str] = field(default_factory=set)
@@ -45,8 +47,11 @@ class PromptTrace:
             if not self.verbose and key in self.seen:
                 return
             if self.path is not None:
-                with self.path.expanduser().open("a", encoding="utf-8") as trace:
-                    trace.write(json.dumps(record, ensure_ascii=False) + "\n")
+                if self.stream is None:
+                    self.path, self.stream = open_unique(self.path)
+                    print(f"Prompt trace saved to: {self.path}")
+                self.stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                self.stream.flush()
             if self.dry_run:
                 # Preview runs never start a live TUI. Print literal text without markup.
                 print(f"\n--- {name or 'custom schema'} ({provider}/{model}) ---")
@@ -66,15 +71,19 @@ def get_prompt_trace() -> PromptTrace | None:
 def prompt_tracing(
     *, enabled: bool = False, path: str | None = None, verbose: bool = False, dry_run: bool = False
 ):
-    """Explicitly enable tracing; the environment controls only its destination."""
-    destination = (
-        Path(path or os.getenv("DEEPFABRIC_PROMPT_TRACE_FILE") or "./prompt-trace.jsonl")
-        if enabled
+    """Explicitly enable tracing with a CLI path or the per-invocation default."""
+    destination = Path(path or "./prompt-trace.jsonl") if enabled else None
+    session = (
+        PromptTrace(path=destination, verbose=verbose, dry_run=dry_run)
+        if enabled or dry_run
         else None
     )
-    session = PromptTrace(destination, verbose, dry_run) if enabled or dry_run else None
     token = _active_trace.set(session)
     try:
         yield session
     finally:
-        _active_trace.reset(token)
+        try:
+            if session is not None and session.stream is not None:
+                session.stream.close()
+        finally:
+            _active_trace.reset(token)

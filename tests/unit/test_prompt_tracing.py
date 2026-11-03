@@ -68,7 +68,8 @@ async def test_composed_prompt_and_stage_are_traced(client, schema, tmp_path, mo
     assert client.async_model.await_args.args[0] == prompt
     assert client.async_model.await_args.kwargs == {"max_tokens": 123}
     captured = capsys.readouterr()
-    assert captured.out == captured.err == ""
+    assert "Prompt trace saved to:" in captured.out
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize("setting", [None, "", "./should-not-be-created.jsonl"])
@@ -105,7 +106,8 @@ async def test_sync_fallback_appends_one_record_per_request(client, tmp_path, mo
     await asyncio.gather(*(client.generate_async(prompt, CustomRecord) for prompt in prompts))
     assert sorted(record["prompt"] for record in read_traces(trace_path)) == sorted(prompts)
     captured = capsys.readouterr()
-    assert captured.out == captured.err == ""
+    assert "Prompt trace saved to:" in captured.out
+    assert captured.err == ""
 
 
 async def test_failed_request_is_traced_before_provider_call(client, tmp_path, monkeypatch):
@@ -147,8 +149,9 @@ async def test_provider_paths_are_traced(client, provider, tmp_path, monkeypatch
 
 
 async def test_unwritable_trace_fails_before_provider_request(client, tmp_path, tracing_session):
-    tracing_session.path = tmp_path
-    with pytest.raises(IsADirectoryError):
+    tracing_session.path = tmp_path / "blocked" / "trace.jsonl"
+    (tmp_path / "blocked").write_text("not a directory")
+    with pytest.raises(FileExistsError):
         await client.generate_async("a prompt", CustomRecord)
     client.async_model.assert_not_awaited()
 
@@ -171,14 +174,15 @@ async def test_new_run_resets_first_stage_and_does_not_leak(client, tmp_path):
         with prompt_tracing(enabled=True, path=str(path)):
             await client.generate_async("prompt", CustomRecord)
             await client.generate_async("suppressed", CustomRecord)
-    assert len(read_traces(path)) == 2
+    assert len(read_traces(path)) == 1
+    assert len(read_traces(tmp_path / "runs_1.jsonl")) == 1
 
 
 @pytest.mark.parametrize(
     "explicit, environment, expected",
     [
         ("flag.jsonl", "env.jsonl", "flag.jsonl"),
-        (None, "env.jsonl", "env.jsonl"),
+        (None, "env.jsonl", "prompt-trace.jsonl"),
         (None, None, "prompt-trace.jsonl"),
     ],
 )

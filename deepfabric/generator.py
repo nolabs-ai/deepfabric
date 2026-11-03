@@ -745,24 +745,15 @@ class DataSetGenerator:
         self._flushed_failures_count = len(failures)
         self._topic_seeds = metadata.get("seeds", {})
         self._collection_attempts = metadata.get("collection_attempts", {})
-        if retry_failed and failures:
-            self._completed.difference_update(
-                (f["topic_id"], f["sample_ordinal"]) for f in failures
-            )
-            # The failed slots are now outstanding, with no superseded failure records.
-            self._checkpoint_failures_path.write_text("", encoding="utf-8")
-            self._flushed_failures_count = 0
-            # A deliberate retry starts a fresh collection budget, but keeps pinned seeds.
-            for failure in failures:
-                self._collection_attempts.pop(failure["topic_id"], None)
-        if any(
+        self._checkpoint_modes_changed = any(
             metadata.get(name, default) != getattr(self.config, name)
             for name, default in (
                 ("topic_sample_mode", "independent"),
                 ("shared_scope", "seed"),
                 ("seed_field", None),
             )
-        ):
+        )
+        if self._checkpoint_modes_changed:
             self._topic_seeds = {
                 topic_id: {
                     ordinal: seed
@@ -775,8 +766,8 @@ class DataSetGenerator:
             logger.warning(
                 "Discarded unsettled seed and collection-attempt state after mode change"
             )
-        if retry_failed and failures:
-            self._save_checkpoint_metadata()
+        if retry_failed:
+            self.retry_checkpoint_failures()
         logger.info(
             "Loaded checkpoint: %d samples, %d failures, %d settled slots",
             self._flushed_samples_count,
@@ -784,6 +775,35 @@ class DataSetGenerator:
             len(self._completed),
         )
         return True
+
+    def retry_checkpoint_failures(self) -> None:
+        """Reopen failed slots after a loaded checkpoint's resume is committed.
+
+        CLI startup first loads read-only and collects all choices. This separate
+        step prevents an aborted prompt from truncating checkpoint failures.
+        """
+        if not self._checkpoint_loaded:
+            raise DataSetGeneratorError("Retry requires an actually loaded checkpoint")
+        failures = read_jsonl(self._checkpoint_failures_path)
+        if not failures:
+            return
+        self._completed.difference_update((f["topic_id"], f["sample_ordinal"]) for f in failures)
+        self._checkpoint_failures_path.write_text("", encoding="utf-8")
+        self._flushed_failures_count = 0
+        for failure in failures:
+            self._collection_attempts.pop(failure["topic_id"], None)
+        if self._checkpoint_modes_changed:
+            # Preserve load_checkpoint(True)'s previous mode-change semantics:
+            # failed slots lose their incompatible pinned seeds once reopened.
+            self._topic_seeds = {
+                topic_id: {
+                    ordinal: seed
+                    for ordinal, seed in seeds.items()
+                    if (topic_id, int(ordinal)) in self._completed
+                }
+                for topic_id, seeds in self._topic_seeds.items()
+            }
+        self._save_checkpoint_metadata()
 
     def clear_checkpoint(self) -> None:
         """Remove checkpoint files."""

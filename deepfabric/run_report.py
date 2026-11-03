@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -11,10 +10,11 @@ from functools import wraps
 from importlib.metadata import PackageNotFoundError, version
 from inspect import signature
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from threading import Lock
 from time import perf_counter
 from uuid import uuid4
+
+from .output_safety import save_output
 
 _active: ContextVar = ContextVar("deepfabric_run_report", default=None)
 _context: ContextVar[dict | None] = ContextVar("deepfabric_metric_context", default=None)
@@ -125,30 +125,20 @@ class RunReport:
         }
 
     def prepare_path(self, path):
-        """Check the requested destination before starting paid generation."""
-        target = Path(path)
-        if target.is_dir():
+        """Validate target type without a startup permission probe."""
+        if Path(path).is_dir():
             raise OSError("Run report path is a directory")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=target.parent):
-            pass
 
     def write(self, path, usage, status):
-        """Atomically replace the explicitly requested report."""
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = None
-        try:
-            with NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=target.parent, delete=False
-            ) as stream:
-                temporary = stream.name
-                json.dump(self.snapshot(usage, status), stream, indent=2, ensure_ascii=False)
+        """Save a separate invocation report, returning its actual path."""
+        snapshot = self.snapshot(usage, status)
+
+        def write_report(destination):
+            with open(destination, "w", encoding="utf-8") as stream:
+                json.dump(snapshot, stream, indent=2, ensure_ascii=False)
                 stream.write("\n")
-            os.replace(temporary, target)
-        finally:
-            if temporary and Path(temporary).exists():
-                Path(temporary).unlink()
+
+        return save_output(path, write_report)
 
 
 @contextmanager

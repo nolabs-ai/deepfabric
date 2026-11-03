@@ -1,8 +1,10 @@
 """Tests for the CLI module."""
 
+import json
 import os
 import tempfile
 
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest  # type: ignore
@@ -10,6 +12,7 @@ import pytest  # type: ignore
 from click.testing import CliRunner
 
 from deepfabric.cli import cli
+from deepfabric.dataset_manager import DatasetSaveResult
 
 
 async def _async_iter(items):
@@ -18,8 +21,9 @@ async def _async_iter(items):
 
 
 @pytest.fixture
-def cli_runner():
+def cli_runner(tmp_path, monkeypatch):
     """Create a CLI runner for testing."""
+    monkeypatch.chdir(tmp_path)
     return CliRunner()
 
 
@@ -136,7 +140,10 @@ def test_generate_help(cli_runner):
     assert "--include-system-message" in result.output
 
 
-@patch("deepfabric.cli.save_dataset")
+@patch(
+    "deepfabric.cli.save_dataset",
+    side_effect=lambda _dataset, path, *_args, **_kwargs: DatasetSaveResult(path),
+)
 @patch("deepfabric.topic_manager.create_topic_generator")
 @patch("deepfabric.cli.DataSetGenerator")
 def test_generate_command_basic(
@@ -194,13 +201,16 @@ def test_generate_command_basic(
     # Verify mocks were called correctly
     mock_create_topic_generator.assert_called_once()
     mock_tree_instance.build_async.assert_called_once()
-    mock_tree_instance.save.assert_called_once()
+    assert Path("test_tree.jsonl").exists()
     mock_data_engine.assert_called_once()
     mock_engine_instance.create_data_with_events_async.assert_called_once()
     mock_save_dataset.assert_called_once()
 
 
-@patch("deepfabric.cli.save_dataset")
+@patch(
+    "deepfabric.cli.save_dataset",
+    side_effect=lambda _dataset, path, *_args, **_kwargs: DatasetSaveResult(path),
+)
 @patch("deepfabric.topic_manager.create_topic_generator")
 @patch("deepfabric.cli.DataSetGenerator")
 def test_generate_command_with_sys_msg_override(
@@ -265,7 +275,10 @@ def test_generate_command_with_sys_msg_override(
     assert kwargs["sys_msg"] is False
 
 
-@patch("deepfabric.cli.save_dataset")
+@patch(
+    "deepfabric.cli.save_dataset",
+    side_effect=lambda _dataset, path, *_args, **_kwargs: DatasetSaveResult(path),
+)
 @patch("deepfabric.topic_manager.create_topic_generator")
 @patch("deepfabric.cli.DataSetGenerator")
 def test_generate_command_default_sys_msg(
@@ -323,7 +336,10 @@ def test_generate_command_default_sys_msg(
     assert "sys_msg" not in kwargs or kwargs["sys_msg"] is None
 
 
-@patch("deepfabric.cli.save_dataset")
+@patch(
+    "deepfabric.cli.save_dataset",
+    side_effect=lambda _dataset, path, *_args, **_kwargs: DatasetSaveResult(path),
+)
 @patch("deepfabric.topic_manager.create_topic_generator")
 @patch("deepfabric.cli.DataSetGenerator")
 def test_generate_command_with_overrides(
@@ -394,7 +410,7 @@ def test_generate_command_with_overrides(
     # Verify mocks were called
     mock_create_topic_generator.assert_called_once()
 
-    mock_tree_instance.save.assert_called_once_with("override_tree.jsonl")
+    assert Path("override_tree.jsonl").exists()
     mock_save_dataset.assert_called_once()
 
     args, kwargs = mock_engine_instance.create_data_with_events_async.call_args
@@ -404,7 +420,10 @@ def test_generate_command_with_overrides(
     assert kwargs["sys_msg"] is False
 
 
-@patch("deepfabric.cli.save_dataset")
+@patch(
+    "deepfabric.cli.save_dataset",
+    side_effect=lambda _dataset, path, *_args, **_kwargs: DatasetSaveResult(path),
+)
 @patch("deepfabric.topic_manager.read_topic_tree_from_jsonl")
 @patch("deepfabric.topic_manager.Tree")
 @patch("deepfabric.cli.DataSetGenerator")
@@ -676,7 +695,10 @@ def test_topic_only_flag_tree(
     # Verify tree was built and saved
     mock_create_topic_generator.assert_called_once()
     mock_tree_instance.build_async.assert_called_once()
-    mock_tree_instance.save.assert_called_once_with("test_tree.jsonl")
+    assert json.loads(Path("test_tree.jsonl").read_text().splitlines()[0])["path"] == [
+        "root",
+        "child1",
+    ]
 
     # Verify success message about topic save
     assert "Topic tree saved to" in result.output
@@ -689,6 +711,7 @@ def test_topic_only_flag_graph(mock_create_topic_generator, cli_runner):
 
     # Setup mock graph
     mock_graph_instance = Mock(spec=Graph)
+    mock_graph_instance.to_json.return_value = '{"nodes": []}'
     mock_graph_instance.build_async.return_value = _async_iter(
         [{"event": "build_complete", "failed_generations": 0}]
     )
@@ -743,7 +766,7 @@ output:
         # Verify graph was built and saved
         mock_create_topic_generator.assert_called_once()
         mock_graph_instance.build_async.assert_called_once()
-        mock_graph_instance.save.assert_called_once_with("test_graph.json")
+        assert json.loads(Path("test_graph.json").read_text()) == {"nodes": []}
 
         # Verify success message about topic save
         assert "Topic graph saved to" in result.output
