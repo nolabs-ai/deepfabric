@@ -279,14 +279,14 @@ class SingleShotBuilder(ConversationBuilder):
         topic_prompt: str,
         error_feedback: str | None = None,
         *,
-        requested: int | str | None = None,
+        num_items: int | str | None = None,
     ) -> str:
         """Build the generation prompt for single-shot generation.
 
         Args:
             topic_prompt: The topic to generate about
             error_feedback: Optional error message from a previous failed attempt
-            requested: Number of complete conversations for bulk/full collection;
+            num_items: Number of complete conversations for bulk/full collection;
                 omitted for an individual conversation.
 
         Returns:
@@ -323,7 +323,7 @@ class SingleShotBuilder(ConversationBuilder):
                 )
 
         # Add explicit structure requirement
-        if requested is None:
+        if num_items is None:
             prompt_parts.append(
                 "\nIMPORTANT: Generate the conversation messages array starting with a 'user' message "
                 "(the user's question or request), followed by an 'assistant' message (the response). "
@@ -331,7 +331,7 @@ class SingleShotBuilder(ConversationBuilder):
             )
         else:
             prompt_parts.append(
-                f"\nGenerate {requested} diverse groups of user and assistant messages. "
+                f"\nGenerate {num_items} diverse groups of user and assistant messages. "
                 "Return an object with an 'items' list of complete conversations. "
                 "Each conversation starts with a user request and ends with the assistant's reply. "
                 "Do not generate system messages; these are added in code."

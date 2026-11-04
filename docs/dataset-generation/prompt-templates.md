@@ -20,7 +20,7 @@ generation:
 {{ examples }}
 {{ subtopics }}
 
-Generate {{ requested }} distinct, complete JSON records.
+Generate {{ num_items }} distinct, complete JSON records.
 Return an object with an "items" list matching the supplied schema.
 {{ accepted_siblings_section }}
 ```
@@ -116,7 +116,7 @@ parsed again, so braces inside instructions, examples or seed data stay intact.
 | `topic_path` | Raw full root-to-target ancestry joined with ` -> `, including internal nodes |
 | `subtopics` | Existing natural-language topic framing; empty on completion unless `completion_includes_topic_path` is enabled |
 | `tools` / `tools_section` | Tool descriptions / their formatted section; empty without tools |
-| `requested` | Number requested in this call: one for individual samples/completions, remaining quota for bulk |
+| `num_items` | Number of output items to generate in this call: one for individual samples/completions, remaining quota for bulk |
 
 Full-sample, sequential-later and seed templates additionally accept:
 
@@ -204,7 +204,7 @@ Topic templates accept these placeholders (sample-only placeholders are unavaila
 | `topic_prompt` | Supplied root text |
 | `current_topic` | Text of the node being expanded |
 | `topic_path` | Full root-to-node ancestry joined with ` -> `; graphs follow first parents |
-| `num_subtopics` / `requested` | Requested number of children |
+| `num_subtopics` / `num_items` | Number of child topics to generate in this call |
 | `examples` | Formatted domain examples from the applicable tree/graph builder |
 | `current_graph_summary` | Graph JSON, or the existing size-limit message; empty for trees |
 | `mode` | `tree` or `graph` |
