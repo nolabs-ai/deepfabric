@@ -318,7 +318,7 @@ class Tree(TopicModel):
             current_topic=node_path[-1] if node_path else "",
             topic_path=" -> ".join(node_path),
             num_subtopics=num_subtopics,
-            requested=num_subtopics,
+            num_items=num_subtopics,
             examples=TreePromptBuilder._format_examples(
                 TreePromptBuilder.EXAMPLES.get(domain, TreePromptBuilder.EXAMPLES["general"])
             ),

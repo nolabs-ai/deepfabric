@@ -27,6 +27,8 @@ from deepfabric.tree import Tree
     [
         {"initial": "{{ typo }}"},
         {"expansion": "{{ history }}"},
+        {"initial": "{{ requested }}"},
+        {"expansion": "{{{{requested}}}}"},
         {"seed": "wrong stage"},
         {"initial": {"file": "missing-topic-template.txt"}},
     ],
@@ -49,13 +51,13 @@ async def test_graph_initial_and_expansion_use_full_first_parent_path(style):
             topic_system_prompt="Persona",
             prompt_style=style,
             prompt_templates={
-                "initial": "FIRST {{ current_topic }} {{ requested }} {{ prompt_style }}",
+                "initial": "FIRST {{ current_topic }} {{ num_items }} {{ prompt_style }}",
                 "expansion": "{{ system_prompt }}|{{ topic_path }}|{{ current_topic }}|{{ num_subtopics }}|{{ mode }}",
             },
         )
     first = graph.add_node("First")
     second = graph.add_node("Second")
-    internal = graph.add_node("Internal {{ requested }}")
+    internal = graph.add_node("Internal {{ num_items }}")
     graph.add_edge(0, first.id)
     graph.add_edge(0, second.id)
     graph.add_edge(first.id, internal.id)
@@ -67,7 +69,7 @@ async def test_graph_initial_and_expansion_use_full_first_parent_path(style):
     assert calls[0].args[0] == f"FIRST Root 3 {style}"
     assert (
         calls[1].args[0]
-        == "Persona|Root -> First -> Internal {{ requested }}|Internal {{ requested }}|2|graph"
+        == "Persona|Root -> First -> Internal {{ num_items }}|Internal {{ num_items }}|2|graph"
     )
 
 
@@ -78,8 +80,8 @@ async def test_tree_initial_and_expansion_keep_schema_and_temperature():
             topic_prompt="Root",
             temperature=0.7,
             prompt_templates={
-                "initial": "ROOT {{ topic_prompt }} {{ requested }}",
-                "expansion": "{{ system_prompt }} {{ topic_path }} {{ requested }} {{ current_graph_summary }}",
+                "initial": "ROOT {{ topic_prompt }} {{ num_items }}",
+                "expansion": "{{ system_prompt }} {{ topic_path }} {{ num_items }} {{ current_graph_summary }}",
             },
         )
     tree.llm_client.generate_async = AsyncMock(return_value=TopicList(subtopics=["Child"]))

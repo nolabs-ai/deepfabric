@@ -792,7 +792,7 @@ class Graph(TopicModel):
                 current_topic=parent_node.topic,
                 topic_path=" -> ".join(topic_path),
                 num_subtopics=num_subtopics,
-                requested=num_subtopics,
+                num_items=num_subtopics,
                 examples=GraphPromptBuilder._format_examples(GraphPromptBuilder.EXAMPLES[domain]),
                 current_graph_summary=(
                     self.to_json()

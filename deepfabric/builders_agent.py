@@ -270,7 +270,7 @@ class SingleTurnAgentBuilder(ConversationBuilder):
     def build_user_question_prompt(
         topic_prompt: str,
         *,
-        requested: int | str = 1,
+        num_items: int | str = 1,
         collection: bool = False,
         collection_request: str | None = None,
     ) -> str:
@@ -279,9 +279,9 @@ class SingleTurnAgentBuilder(ConversationBuilder):
             collection_request
             or render_template(
                 default_template(
-                    f"request_bulk_conversation_{'single' if requested == 1 else 'plural'}"
+                    f"request_bulk_conversation_{'single' if num_items == 1 else 'plural'}"
                 ),
-                {"requested": requested},
+                {"num_items": num_items},
             )
             if collection
             else "Generate a short, natural user question for this scenario:"

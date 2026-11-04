@@ -27,7 +27,7 @@ COMMON_FIELDS = frozenset(
         "topic_path",
         "tools",
         "tools_section",
-        "requested",
+        "num_items",
     }
 )
 COLLECTION_FIELDS = frozenset(
@@ -86,7 +86,7 @@ TOPIC_FIELDS = frozenset(
         "current_topic",
         "topic_path",
         "num_subtopics",
-        "requested",
+        "num_items",
         "examples",
         "current_graph_summary",
         "prompt_style",

@@ -1032,14 +1032,14 @@ class DataSetGenerator:
             if self.tool_registry and self.tool_registry.tools
             else "",
             "tools_section": self.build_tools_section(),
-            "requested": 1,
+            "num_items": 1,
             "seed_field": json.dumps(self.config.seed_field) if self.config.seed_field else "",
             "history": "[]",
             "sequential_history": "",
             "accepted_siblings_section": "",
             "scope": self.config.shared_scope,
             "request_instruction": render_template(
-                default_template("request_bulk_full_single"), {"requested": 1}
+                default_template("request_bulk_full_single"), {"num_items": 1}
             ),
             "output_instructions": default_template("output_completion_custom")
             if step == "completion" and self.config.output_schema is not None
@@ -1077,7 +1077,7 @@ class DataSetGenerator:
         path: list[str] | None,
         num_examples: int,
         *,
-        requested: int | str = 1,
+        num_items: int | str = 1,
         request_instruction: str,
         accepted_siblings_section: str = "",
         history: list | None = None,
@@ -1091,7 +1091,7 @@ class DataSetGenerator:
             "tools_section": self.build_tools_section(),
             "accepted_siblings_section": accepted_siblings_section,
             "history": json.dumps(history or [], ensure_ascii=False),
-            "requested": requested,
+            "num_items": num_items,
             "request_instruction": request_instruction,
             "output_instructions": 'Generate only the user questions as an object with an "items" list of strings:',
         }
@@ -1103,7 +1103,7 @@ class DataSetGenerator:
         if accepted_siblings_section:
             prompt += f"\n{accepted_siblings_section}"
         prompt = SingleTurnAgentBuilder.build_user_question_prompt(
-            prompt, requested=requested, collection=True, collection_request=request_instruction
+            prompt, num_items=num_items, collection=True, collection_request=request_instruction
         )
         return self._apply_prompt_override("seed", prompt, path, num_examples, **values)
 
@@ -1903,7 +1903,7 @@ class DataSetGenerator:
     def _build_bulk_collection_prompt(
         self,
         allocation: dict,
-        requested: int | str,
+        num_items: int | str,
         accepted_siblings: list,
         num_example_demonstrations: int,
     ) -> str:
@@ -1917,8 +1917,8 @@ class DataSetGenerator:
             else "conversation"
         )
         request = render_template(
-            default_template(f"request_bulk_{kind}_{'single' if requested == 1 else 'plural'}"),
-            {"requested": requested, "seed_field": json.dumps(self.config.seed_field)},
+            default_template(f"request_bulk_{kind}_{'single' if num_items == 1 else 'plural'}"),
+            {"num_items": num_items, "seed_field": json.dumps(self.config.seed_field)},
         )
         siblings = (
             render_template(
@@ -1932,7 +1932,7 @@ class DataSetGenerator:
             return self._build_bulk_agent_question_prompt(
                 allocation["path"],
                 num_example_demonstrations,
-                requested=requested,
+                num_items=num_items,
                 request_instruction=request,
                 accepted_siblings_section=siblings,
                 history=accepted_siblings,
@@ -1986,7 +1986,7 @@ class DataSetGenerator:
                 ),
                 accepted_siblings_section=siblings,
                 request_instruction=request,
-                requested=requested,
+                num_items=num_items,
                 history=json.dumps(accepted_siblings, ensure_ascii=False),
                 tools_section="",
                 output_instructions=default_template("output_seed_conversation"),
@@ -2014,14 +2014,14 @@ class DataSetGenerator:
             if siblings:
                 topic_prompt += f"\n{siblings}"
             builder = SingleShotBuilder(self.llm_client, self.config)
-            prompt = builder._build_prompt(topic_prompt, requested=requested)
+            prompt = builder._build_prompt(topic_prompt, num_items=num_items)
             return self._apply_prompt_override(
                 "full_sample",
                 prompt,
                 allocation["path"],
                 num_example_demonstrations,
                 **common,
-                requested=requested,
+                num_items=num_items,
                 history=json.dumps(accepted_siblings, ensure_ascii=False),
                 record_instructions=self._bulk_record_instructions(),
                 output_instructions=self._bulk_record_instructions(),
@@ -2049,7 +2049,7 @@ class DataSetGenerator:
             )
             if seed_scope
             else self._bulk_record_instructions(),
-            requested=requested,
+            num_items=num_items,
             history=json.dumps(accepted_siblings, ensure_ascii=False),
         )
 

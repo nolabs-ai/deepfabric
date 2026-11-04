@@ -95,6 +95,8 @@ def test_legacy_scalar_is_active_and_conflicting_override_is_rejected():
         "{{{{system_prompt}}}}",
         "{{ history_section }}",
         "{{{{history_section}}}}",
+        "{{ requested }}",
+        "{{{{requested}}}}",
     ],
 )
 def test_sample_templates_reject_removed_aliases(step, placeholder):
@@ -111,7 +113,7 @@ def test_sample_templates_reject_removed_aliases(step, placeholder):
     client.assert_not_called()
 
 
-@pytest.mark.parametrize("name", ["system_prompt", "history_section"])
+@pytest.mark.parametrize("name", ["system_prompt", "history_section", "requested"])
 def test_scalar_template_rejects_removed_aliases(name):
     with pytest.raises(DataSetGeneratorError, match=f"Unknown or unavailable.*{name}"):
         make_engine(prompt_template="{{ " + name + " }}")
@@ -228,7 +230,7 @@ def test_full_sample_override_selects_all_full_sample_modes(mode, scope):
     options = {
         "topic_sample_mode": mode,
         "prompt_templates": {
-            "full_sample": "FULL {{ requested }} {{ generation_system_prompt }} {{ history }} {{ topic_path }}"
+            "full_sample": "FULL {{ num_items }} {{ generation_system_prompt }} {{ history }} {{ topic_path }}"
         },
     }
     if scope:
@@ -254,8 +256,8 @@ async def test_seed_and_completion_overrides_preserve_pin_and_schema():
         seed_field="command",
         prompt_templates={
             "full_sample": "UNUSED FULL",
-            "seed": "SEEDS {{ requested }} {{ seed_field }} {{ history }} {{ topic_path }}",
-            "completion": "COMPLETE {{ seed }} {{ seed_section }} {{ dataset_system_prompt }} PATH={{ topic_path }} FRAMING={{ subtopics }} {{ retry_feedback }}",
+            "seed": "SEEDS {{ num_items }} {{ seed_field }} {{ history }} {{ topic_path }}",
+            "completion": "COMPLETE {{ seed }} {{ seed_section }} {{ dataset_system_prompt }} PATH={{ topic_path }} FRAMING={{ subtopics }} {{ retry_feedback }} COUNT={{ num_items }}",
         },
     )
     prompt = engine._build_bulk_collection_prompt(ALLOCATION, 2, ["docker ps"], 0)
@@ -278,6 +280,7 @@ async def test_seed_and_completion_overrides_preserve_pin_and_schema():
     assert failure is None and sample == {"command": "docker ps", "rationale": "read-only"}
     call = engine.llm_client.generate_async.call_args
     assert 'COMPLETE "docker ps"' in call.args[0] and "DATASET_PERSONA" in call.args[0]
+    assert call.args[0].endswith("COUNT=1")
     assert "PATH=Root -> Parent -> Internal target FRAMING= " in call.args[0]
     assert "command" not in call.args[1].model_json_schema()["properties"]
     assert "system_prompt" not in call.kwargs  # Templates do not add API system-role delivery.
@@ -412,7 +415,7 @@ async def test_sequential_later_override_does_not_bypass_default_first_prompt():
 def test_custom_preview_and_real_composition_match_without_provider_calls(tmp_path):
     source = tmp_path / "frame.txt"
     source.write_text(
-        "FRAME {{ requested }} {{ generation_system_prompt }} {{ topic_path }} {{ history }}"
+        "FRAME {{ num_items }} {{ generation_system_prompt }} {{ topic_path }} {{ history }}"
     )
     config = {
         "topics": {"prompt": "Topic", "mode": "graph"},
@@ -494,7 +497,7 @@ def test_diverse_distinct_ablation_changes_only_the_requested_word(tmp_path):
     baseline = make_engine(topic_sample_mode="bulk", shared_scope="full")
     original = baseline._build_bulk_collection_prompt(ALLOCATION, 5, [], 0)
     template = default_template("bulk_full_sample").replace(
-        "{{ request_instruction }}", "Generate {{ requested }} diverse, complete JSON records."
+        "{{ request_instruction }}", "Generate {{ num_items }} diverse, complete JSON records."
     )
     prompts = {}
     for word in ("diverse", "distinct"):
