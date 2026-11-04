@@ -127,6 +127,12 @@ plugins:
           options:
             docstring_style: google
 
+extra_css:
+  - assets/stylesheets/table-columns.css
+
+extra_javascript:
+  - assets/javascripts/table-columns.js
+
 extra:
   social:
     - icon: fontawesome/brands/github
