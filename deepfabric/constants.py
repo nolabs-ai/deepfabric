@@ -39,7 +39,7 @@ ROLE_ASSISTANT = "assistant"
 VALID_ROLES = [ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT]
 
 # Placeholders
-SYSTEM_PROMPT_VAR = "{{{{system_prompt}}}}"
+GENERATION_SYSTEM_PROMPT_VAR = "{{{{generation_system_prompt}}}}"
 INSTRUCTIONS_VAR = "{{{{instructions}}}}"
 EXAMPLES_VAR = "{{{{examples}}}}"
 SUBTOPICS_VAR = "{{{{subtopics}}}}"

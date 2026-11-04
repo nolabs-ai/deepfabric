@@ -1,7 +1,7 @@
 Generate a training conversation for a language model with this system prompt:
 
 <system_prompt>
-{{ system_prompt }}
+{{ generation_system_prompt }}
 </system_prompt>
 
 Create a realistic single q&a that demonstrates the system's capabilities. The conversation should:

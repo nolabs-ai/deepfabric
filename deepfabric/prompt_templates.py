@@ -19,7 +19,6 @@ from pydantic import (
 
 COMMON_FIELDS = frozenset(
     {
-        "system_prompt",
         "generation_system_prompt",
         "dataset_system_prompt",
         "instructions",
@@ -38,7 +37,7 @@ COLLECTION_FIELDS = frozenset(
         "output_instructions",
         "record_instructions",
         "history",
-        "history_section",
+        "sequential_history",
         "accepted_siblings_section",
         "seed_field",
         "scope",

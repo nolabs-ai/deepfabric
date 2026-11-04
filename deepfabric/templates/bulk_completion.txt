@@ -1,6 +1,6 @@
 Write the remainder of one record according to this system prompt:
 <system_prompt>
-{{ system_prompt }}
+{{ dataset_system_prompt }}
 </system_prompt>
 
 The pinned seed field is {{ seed_field }}. Its value is:
