@@ -19,7 +19,7 @@ from .constants import (
 from .llm import LLMClient
 from .llm.rate_limit_detector import RateLimitDetector
 from .metrics import trace
-from .prompt_templates import TopicPromptTemplates
+from .prompt_templates import TopicPromptTemplates, placeholders
 from .prompts import (
     GRAPH_EXPANSION_PROMPT,
     GRAPH_EXPANSION_PROMPT_NO_CONNECTIONS,
@@ -791,9 +791,19 @@ class Graph(TopicModel):
                 topic_prompt=self.topic_prompt,
                 current_topic=parent_node.topic,
                 topic_path=" -> ".join(topic_path),
+                topic_path_json=topic_path,
                 num_subtopics=num_subtopics,
                 num_items=num_subtopics,
                 examples=GraphPromptBuilder._format_examples(GraphPromptBuilder.EXAMPLES[domain]),
+                raw_examples=GraphPromptBuilder.EXAMPLES[domain][
+                    : GraphPromptBuilder.MAX_PROMPT_EXAMPLES
+                ],
+                raw_graph=(
+                    self.to_pydantic().model_dump(mode="json")
+                    if "raw_graph" in placeholders(source.content)
+                    else None
+                ),
+                raw_tree=None,
                 current_graph_summary=(
                     self.to_json()
                     if len(self.nodes) <= TOPIC_GRAPH_SUMMARY

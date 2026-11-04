@@ -415,12 +415,14 @@ async def test_sequential_later_override_does_not_bypass_default_first_prompt():
 def test_custom_preview_and_real_composition_match_without_provider_calls(tmp_path):
     source = tmp_path / "frame.txt"
     source.write_text(
-        "FRAME {{ num_items }} {{ generation_system_prompt }} {{ topic_path }} {{ history }}"
+        "FRAME {{ num_items }} {{ generation_system_prompt }} {{ topic_path }} {{ history }}\n"
+        "{{ raw_instructions }}|{{ raw_examples }}|{{ raw_tools }}|{{ topic_path_json }}"
     )
     config = {
         "topics": {"prompt": "Topic", "mode": "graph"},
         "generation": {
             "system_prompt": "PERSONA",
+            "instructions": "Preserve café {{ seed }}",
             "topic_sample_mode": "bulk",
             "shared_scope": "full",
             "output_schema": SCHEMA,

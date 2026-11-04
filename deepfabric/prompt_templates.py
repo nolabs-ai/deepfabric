@@ -1,6 +1,7 @@
 """Validated, literal prompt templates and packaged default assets."""
 
 import hashlib
+import json
 import re
 
 from functools import cache
@@ -28,6 +29,12 @@ COMMON_FIELDS = frozenset(
         "tools",
         "tools_section",
         "num_items",
+        "raw_instructions",
+        "raw_examples",
+        "raw_tools",
+        "raw_seed_field",
+        "raw_retry_feedback",
+        "topic_path_json",
     }
 )
 COLLECTION_FIELDS = frozenset(
@@ -64,6 +71,7 @@ def normalize_legacy(text: str) -> str:
 
 
 def placeholders(text: str) -> set[str]:
+    text = normalize_legacy(text)
     if "{{" in PLACEHOLDER.sub("", text):
         raise ValueError("Unclosed prompt placeholder; use {{ name }}")
     names = set()
@@ -92,6 +100,10 @@ TOPIC_FIELDS = frozenset(
         "prompt_style",
         "mode",
         "default_prompt",
+        "raw_examples",
+        "topic_path_json",
+        "raw_graph",
+        "raw_tree",
     }
 )
 
@@ -117,7 +129,12 @@ def render_template(text: str, values: dict, *, strict: bool = True) -> str:
     def replace(match):
         name = match[1].strip()
         if name in values:
-            return str(values[name])
+            value = values[name]
+            if value is None:
+                return ""
+            if isinstance(value, list | dict):
+                return json.dumps(value, ensure_ascii=False, indent=2)
+            return str(value)
         if name.startswith(".") or not strict:
             return match[0]
         raise ValueError(f"Missing prompt placeholder value: {name}")

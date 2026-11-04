@@ -58,6 +58,7 @@ from .progress import ProgressReporter
 from .prompt_templates import (
     compatibility_template,
     default_template,
+    placeholders,
     render_template,
     template_manifest,
 )
@@ -1017,13 +1018,26 @@ class DataSetGenerator:
         )
         if text is None:
             return default
+        example_context = (
+            self._build_example_context(num_examples) if "examples" not in values else {}
+        )
         context = {
+            **example_context,
+            "raw_examples": example_context.get("raw_examples"),
+            "raw_instructions": self.config.instructions,
+            "raw_seed_field": self.config.seed_field,
+            "raw_retry_feedback": None,
+            "topic_path_json": path,
+            "raw_tools": (
+                [tool.model_dump(mode="json") for tool in self.tool_registry.tools]
+                if "raw_tools" in placeholders(text)
+                and self.tool_registry
+                and self.tool_registry.tools
+                else None
+            ),
             "generation_system_prompt": self.generation_prompt,
             "dataset_system_prompt": self.dataset_system_prompt,
             "instructions": self.build_custom_instructions_text(),
-            "examples": values["examples"]
-            if "examples" in values
-            else self.build_examples_text(num_examples),
             "subtopics": self.build_subtopics_text(path)
             if step != "completion" or self.config.completion_includes_topic_path
             else "",
@@ -1086,7 +1100,7 @@ class DataSetGenerator:
         values = {
             "generation_system_prompt": self.generation_prompt,
             "instructions": self.build_custom_instructions_text(),
-            "examples": self.build_examples_text(num_examples),
+            **self._build_example_context(num_examples),
             "subtopics": self.build_subtopics_text(path),
             "tools_section": self.build_tools_section(),
             "accepted_siblings_section": accepted_siblings_section,
@@ -1942,7 +1956,8 @@ class DataSetGenerator:
             and self.config.output_schema is None
             and self.config.conversation_type == "cot"
         ):
-            examples = self.build_examples_text(num_example_demonstrations)
+            example_context = self._build_example_context(num_example_demonstrations)
+            examples = example_context["examples"]
             scenario = (
                 STRUCTURED_COT_PROMPT
                 if self.config.reasoning_style == "agent"
@@ -1976,7 +1991,7 @@ class DataSetGenerator:
                 num_example_demonstrations,
                 generation_system_prompt=self.generation_prompt,
                 instructions=self.build_custom_instructions_text(),
-                examples=examples,
+                **example_context,
                 subtopics=self.build_subtopics_text(allocation["path"]),
                 record_instructions=scenario,
                 additional_instructions=(
@@ -2000,7 +2015,7 @@ class DataSetGenerator:
             "generation_system_prompt": self.generation_prompt,
             "subtopics": self.build_subtopics_text(allocation["path"]),
             "instructions": self.build_custom_instructions_text(),
-            "examples": self.build_examples_text(num_example_demonstrations),
+            **self._build_example_context(num_example_demonstrations),
             "accepted_siblings_section": siblings,
             "tools_section": self.build_tools_section(),
         }
@@ -2345,7 +2360,7 @@ class DataSetGenerator:
             if self.config.completion_includes_topic_path
             else "",
             instructions=self.build_custom_instructions_text(),
-            examples=self.build_examples_text(num_example_demonstrations),
+            **self._build_example_context(num_example_demonstrations),
             tools_section="" if agent else self.build_tools_section(),
             context_guidance="",
         )
@@ -2486,9 +2501,10 @@ class DataSetGenerator:
                 else "",
                 context_guidance=self._completion_context_guidance(),
                 instructions=self.build_custom_instructions_text(),
-                examples=self.build_examples_text(num_example_demonstrations),
+                **self._build_example_context(num_example_demonstrations),
                 tools_section=self.build_tools_section(),
                 retry_feedback=f"RETRY: {last_error}" if attempt else "",
+                raw_retry_feedback=last_error if attempt else None,
             )
             label = f"Completing sample {sample_idx + 1} (attempt {attempt + 1}/{budget})"
             metadata = {
@@ -2754,7 +2770,7 @@ class DataSetGenerator:
             generation_system_prompt=self.generation_prompt,
             subtopics=self.build_subtopics_text(allocation["path"]),
             instructions=self.build_custom_instructions_text(),
-            examples=self.build_examples_text(num_example_demonstrations),
+            **self._build_example_context(num_example_demonstrations),
             tools_section=self.build_tools_section(),
             sequential_history=sequential_history,
             history=json.dumps(history, ensure_ascii=False),
@@ -3265,8 +3281,8 @@ class DataSetGenerator:
             "{{{{generation_system_prompt}}}}", self.generation_prompt
         )
         prompt = prompt.replace("{{{{instructions}}}}", self.build_custom_instructions_text())
-        examples = self.build_examples_text(num_example_demonstrations)
-        prompt = prompt.replace("{{{{examples}}}}", examples)
+        example_context = self._build_example_context(num_example_demonstrations)
+        prompt = prompt.replace("{{{{examples}}}}", example_context["examples"])
         prompt = prompt.replace("{{{{subtopics}}}}", self.build_subtopics_text(subtopics_list))
         if sequential_history:
             prompt += f"\n{sequential_history}"
@@ -3275,7 +3291,7 @@ class DataSetGenerator:
             prompt,
             subtopics_list,
             num_example_demonstrations,
-            examples=examples,
+            **example_context,
             sequential_history=sequential_history,
             history=json.dumps(history or [], ensure_ascii=False),
         )
@@ -3289,16 +3305,24 @@ class DataSetGenerator:
             return ""
         return f"\nHere are additional instructions:\n<instructions>\n{self.config.instructions}\n</instructions>\n"
 
-    def build_examples_text(self, num_example_demonstrations: int):
+    def _build_example_context(self, num_example_demonstrations: int) -> dict:
+        """Select once and expose the same examples with and without framing."""
         if self.config.example_data is None or num_example_demonstrations == 0:
-            return ""
+            return {"examples": "", "raw_examples": None}
         # Bandit: not a security function
         # HF Dataset supports len() and indexing, convert to list for sampling
         example_list = list(self.config.example_data)
         examples = random.sample(example_list, min(num_example_demonstrations, len(example_list)))  # nosec
         examples_text = "Here are output examples:\n\n"
         examples_text += "\n".join(f"Example {i + 1}: \n\n{ex}\n" for i, ex in enumerate(examples))
-        return f"\nHere are output examples:\n<examples>\n{examples_text}\n</examples>\n"
+        return {
+            "examples": f"\nHere are output examples:\n<examples>\n{examples_text}\n</examples>\n",
+            "raw_examples": examples,
+        }
+
+    def build_examples_text(self, num_example_demonstrations: int) -> str:
+        """Return the existing framed example text."""
+        return self._build_example_context(num_example_demonstrations)["examples"]
 
     def _completion_context_guidance(self) -> str:
         """Clarify the scope of unchanged user instructions when ancestry is withheld."""

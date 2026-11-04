@@ -57,7 +57,10 @@ def make_engine(tmp_path):
         params.update(options)
         with patch("deepfabric.generator.LLMClient"):
             engine = DataSetGenerator(**params)
-        engine.build_examples_text = lambda _count: "MY_EXAMPLE"
+        engine._build_example_context = lambda _count: {
+            "examples": "MY_EXAMPLE",
+            "raw_examples": None,
+        }
         return engine
 
     return make
