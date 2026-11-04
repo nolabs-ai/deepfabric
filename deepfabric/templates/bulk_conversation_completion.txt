@@ -1,6 +1,6 @@
 Write the assistant's reply according to this system prompt:
 <system_prompt>
-{{ system_prompt }}
+{{ dataset_system_prompt }}
 </system_prompt>
 {{ instructions }}
 {{ examples }}

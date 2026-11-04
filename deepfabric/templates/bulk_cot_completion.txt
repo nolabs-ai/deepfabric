@@ -1,4 +1,4 @@
-{{ system_prompt }}
+{{ dataset_system_prompt }}
 
 Topic/Scenario: Generate an assistant response that solves the following reasoning problem.
 

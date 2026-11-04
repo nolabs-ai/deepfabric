@@ -78,13 +78,90 @@ def test_invalid_templates_fail_before_client_initialization(templates, error):
 
 
 def test_legacy_scalar_is_active_and_conflicting_override_is_rejected():
-    engine = make_engine(prompt_template="{{{{system_prompt}}}}\n{{ topic_path }}")
+    engine = make_engine(prompt_template="{{{{generation_system_prompt}}}}\n{{ topic_path }}")
     assert (
         engine.build_prompt(engine._get_prompt_template(), 0, ALLOCATION["path"])
         == "GENERATION_PERSONA\nRoot -> Parent -> Internal target"
     )
     with pytest.raises(DataSetGeneratorError, match="not both"):
         make_engine(prompt_template="legacy", prompt_templates={"full_sample": "new"})
+
+
+@pytest.mark.parametrize("step", ["full_sample", "sequential_later", "seed", "completion"])
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "{{ system_prompt }}",
+        "{{{{system_prompt}}}}",
+        "{{ history_section }}",
+        "{{{{history_section}}}}",
+    ],
+)
+def test_sample_templates_reject_removed_aliases(step, placeholder):
+    with (
+        patch("deepfabric.generator.LLMClient") as client,
+        pytest.raises(DataSetGeneratorError, match="Unknown or unavailable"),
+    ):
+        DataSetGenerator(
+            generation_system_prompt="Generate",
+            provider="openai",
+            model_name="test",
+            prompt_templates={step: placeholder},
+        )
+    client.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["system_prompt", "history_section"])
+def test_scalar_template_rejects_removed_aliases(name):
+    with pytest.raises(DataSetGeneratorError, match=f"Unknown or unavailable.*{name}"):
+        make_engine(prompt_template="{{ " + name + " }}")
+
+
+@pytest.mark.parametrize("kind", ["custom", "basic", "cot", "tool"])
+@pytest.mark.parametrize("scope", ["seed", "full"])
+@pytest.mark.parametrize("has_history", [False, True])
+def test_sequential_and_bulk_history_sections_are_distinct(kind, scope, has_history):
+    if kind == "tool" and scope == "full":
+        pytest.skip("Bulk/full does not support tools")
+    frame = (
+        "SEQUENTIAL={{ sequential_history }}|BULK={{ accepted_siblings_section }}|RAW={{ history }}"
+    )
+    options = {
+        "shared_scope": scope,
+        "seed_field": "command" if kind == "custom" and scope == "seed" else None,
+        "output_schema": SCHEMA if kind == "custom" else None,
+        "conversation_type": "cot" if kind == "cot" else "basic",
+        "prompt_templates": dict.fromkeys(("full_sample", "sequential_later", "seed"), frame),
+    }
+    history = ["earlier command"] if has_history else []
+    sequential = make_engine(topic_sample_mode="sequential", **options)
+    bulk = make_engine(topic_sample_mode="bulk", **options)
+    if kind == "tool":
+        for engine in (sequential, bulk):
+            engine.tool_registry = SimpleNamespace(
+                tools=[SimpleNamespace(name="lookup", description="Find facts", parameters=[])]
+            )
+    sequential_prompt = sequential._build_sequential_prompt(ALLOCATION, history, 0)
+    bulk_prompt = bulk._build_bulk_collection_prompt(ALLOCATION, 2, history, 0)
+    assert "|BULK=|RAW=" in sequential_prompt
+    assert bulk_prompt.startswith("SEQUENTIAL=|BULK=")
+    assert ("<prior_successes" in sequential_prompt) == has_history
+    assert "<accepted_siblings>" not in sequential_prompt
+    assert ("<accepted_siblings>" in bulk_prompt) == has_history
+    assert "<prior_successes" not in bulk_prompt
+    assert sequential_prompt.endswith("RAW=" + json.dumps(history))
+    assert bulk_prompt.endswith("RAW=" + json.dumps(history))
+
+
+@pytest.mark.parametrize("step", ["full_sample", "sequential_later", "seed", "completion"])
+@pytest.mark.parametrize("output_prompt", [None, "DATASET_PERSONA"])
+def test_explicit_prompt_placeholders_have_stable_meanings_across_stages(step, output_prompt):
+    engine = make_engine(
+        dataset_system_prompt=output_prompt,
+        prompt_templates={step: "{{ generation_system_prompt }}|{{ dataset_system_prompt }}"},
+    )
+    prompt = engine._apply_prompt_override(step, "unused default", ALLOCATION["path"], 0)
+    assert prompt == f"GENERATION_PERSONA|{output_prompt or 'GENERATION_PERSONA'}"
 
 
 def test_rendering_is_literal_single_pass_and_preserves_json_and_go_fields():
@@ -113,7 +190,7 @@ def test_files_resolve_relative_to_yaml_and_are_snapshotted(tmp_path, monkeypatc
     directory = tmp_path / "config"
     directory.mkdir()
     source = directory / "prompt.txt"
-    source.write_text("FIRST {{ system_prompt }}")
+    source.write_text("FIRST {{ generation_system_prompt }}")
     path = directory / "run.yaml"
     path.write_text(
         yaml.safe_dump(
@@ -129,16 +206,16 @@ def test_files_resolve_relative_to_yaml_and_are_snapshotted(tmp_path, monkeypatc
     )
     monkeypatch.chdir(tmp_path)
     config = DeepFabricConfig.from_yaml(str(path))
-    source.write_text("SECOND {{ system_prompt }}")
+    source.write_text("SECOND {{ generation_system_prompt }}")
     params = config.get_generation_params()
     with patch("deepfabric.generator.LLMClient"):
         engine = DataSetGenerator(**params)
     assert engine.build_prompt(engine._get_prompt_template(), 0) == "FIRST PERSONA"
     manifest = template_manifest(engine.config.prompt_templates)
-    assert manifest["overrides"]["full_sample"]["text"] == "FIRST {{ system_prompt }}"
+    assert manifest["overrides"]["full_sample"]["text"] == "FIRST {{ generation_system_prompt }}"
     assert (
         manifest["overrides"]["full_sample"]["sha256"]
-        == hashlib.sha256(b"FIRST {{ system_prompt }}").hexdigest()
+        == hashlib.sha256(b"FIRST {{ generation_system_prompt }}").hexdigest()
     )
     assert manifest["overrides"]["full_sample"]["file"] == str(source)
 
@@ -151,7 +228,7 @@ def test_full_sample_override_selects_all_full_sample_modes(mode, scope):
     options = {
         "topic_sample_mode": mode,
         "prompt_templates": {
-            "full_sample": "FULL {{ requested }} {{ system_prompt }} {{ history }} {{ topic_path }}"
+            "full_sample": "FULL {{ requested }} {{ generation_system_prompt }} {{ history }} {{ topic_path }}"
         },
     }
     if scope:
@@ -178,7 +255,7 @@ async def test_seed_and_completion_overrides_preserve_pin_and_schema():
         prompt_templates={
             "full_sample": "UNUSED FULL",
             "seed": "SEEDS {{ requested }} {{ seed_field }} {{ history }} {{ topic_path }}",
-            "completion": "COMPLETE {{ seed }} {{ seed_section }} {{ system_prompt }} PATH={{ topic_path }} FRAMING={{ subtopics }} {{ retry_feedback }}",
+            "completion": "COMPLETE {{ seed }} {{ seed_section }} {{ dataset_system_prompt }} PATH={{ topic_path }} FRAMING={{ subtopics }} {{ retry_feedback }}",
         },
     )
     prompt = engine._build_bulk_collection_prompt(ALLOCATION, 2, ["docker ps"], 0)
@@ -246,7 +323,7 @@ async def test_conversation_override_preserves_exported_roles_and_system_prompt(
         topic_sample_mode="sequential",
         shared_scope="full",
         prompt_templates={
-            "full_sample": "CUSTOM {{ system_prompt }} {{ dataset_system_prompt }} {{ topic_path }}"
+            "full_sample": "CUSTOM {{ generation_system_prompt }} {{ dataset_system_prompt }} {{ topic_path }}"
         },
     )
 
@@ -334,7 +411,9 @@ async def test_sequential_later_override_does_not_bypass_default_first_prompt():
 
 def test_custom_preview_and_real_composition_match_without_provider_calls(tmp_path):
     source = tmp_path / "frame.txt"
-    source.write_text("FRAME {{ requested }} {{ system_prompt }} {{ topic_path }} {{ history }}")
+    source.write_text(
+        "FRAME {{ requested }} {{ generation_system_prompt }} {{ topic_path }} {{ history }}"
+    )
     config = {
         "topics": {"prompt": "Topic", "mode": "graph"},
         "generation": {
@@ -385,8 +464,10 @@ def test_custom_preview_and_real_composition_match_without_provider_calls(tmp_pa
 
 
 def test_yaml_accepts_legacy_scalar():
-    config = GenerationConfig(system_prompt="test", prompt_template="{{ system_prompt }}")
-    assert config.prompt_template == "{{ system_prompt }}"
+    config = GenerationConfig(
+        system_prompt="test", prompt_template="{{ generation_system_prompt }}"
+    )
+    assert config.prompt_template == "{{ generation_system_prompt }}"
     assert GenerationPromptTemplates().full_sample is None
 
 
@@ -431,7 +512,7 @@ def test_diverse_distinct_ablation_changes_only_the_requested_word(tmp_path):
 
 def test_report_captures_loaded_template_even_if_file_changes_mid_run(tmp_path):
     source = tmp_path / "frame.txt"
-    source.write_text("FIRST {{ system_prompt }}")
+    source.write_text("FIRST {{ generation_system_prompt }}")
     config = tmp_path / "run.yaml"
     config.write_text(
         yaml.safe_dump(
@@ -457,7 +538,9 @@ def test_report_captures_loaded_template_even_if_file_changes_mid_run(tmp_path):
             patch("deepfabric.cli._initialize_topic_model", return_value=object()),
             patch(
                 "deepfabric.cli._run_generation",
-                side_effect=lambda **_kwargs: source.write_text("SECOND {{ system_prompt }}"),
+                side_effect=lambda **_kwargs: source.write_text(
+                    "SECOND {{ generation_system_prompt }}"
+                ),
             ),
         ):
             result = CliRunner().invoke(cli, ["generate", str(config), "--run-report", str(report)])
@@ -465,8 +548,11 @@ def test_report_captures_loaded_template_even_if_file_changes_mid_run(tmp_path):
         reports.append(json.loads(report.read_text()))
     assert reports[0]["config"]["sha256"] == reports[1]["config"]["sha256"]
     first, second = [report["prompt_templates"]["overrides"]["full_sample"] for report in reports]
-    assert first["text"] == "FIRST {{ system_prompt }}"
-    assert second["text"] == "SECOND {{ system_prompt }}" and first["sha256"] != second["sha256"]
+    assert first["text"] == "FIRST {{ generation_system_prompt }}"
+    assert (
+        second["text"] == "SECOND {{ generation_system_prompt }}"
+        and first["sha256"] != second["sha256"]
+    )
     assert reports[0]["prompt_templates"]["builtins"]["bulk_full_sample.txt"]
     assert (
         reports[0]["prompt_templates"]["overrides"]["sequential_later"]["sha256"] == first["sha256"]
@@ -481,7 +567,7 @@ def test_sequential_later_can_move_history_before_context(scope):
         seed_field="command",
         prompt_templates={
             "full_sample": "FIRST {{ topic_path }}",
-            "sequential_later": "{{ history_section }}LATER {{ topic_path }} {{ output_instructions }}",
+            "sequential_later": "{{ sequential_history }}LATER {{ topic_path }} {{ output_instructions }}",
         },
     )
     first = engine._build_sequential_prompt(ALLOCATION, [], 0, later=False)

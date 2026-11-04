@@ -1,10 +1,10 @@
-{{ system_prompt }}
+{{ generation_system_prompt }}
 
 Topic/Scenario:
 Generate training conversation for a language model with this system prompt:
 
 <system_prompt>
-{{ system_prompt }}
+{{ generation_system_prompt }}
 </system_prompt>
 
 Your aim is to create realistic q&a that demonstrates the system's capabilities. The conversation should:

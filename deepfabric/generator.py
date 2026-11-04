@@ -1018,9 +1018,6 @@ class DataSetGenerator:
         if text is None:
             return default
         context = {
-            "system_prompt": self.dataset_system_prompt
-            if step == "completion"
-            else self.generation_prompt,
             "generation_system_prompt": self.generation_prompt,
             "dataset_system_prompt": self.dataset_system_prompt,
             "instructions": self.build_custom_instructions_text(),
@@ -1038,7 +1035,7 @@ class DataSetGenerator:
             "requested": 1,
             "seed_field": json.dumps(self.config.seed_field) if self.config.seed_field else "",
             "history": "[]",
-            "history_section": "",
+            "sequential_history": "",
             "accepted_siblings_section": "",
             "scope": self.config.shared_scope,
             "request_instruction": render_template(
@@ -1082,18 +1079,17 @@ class DataSetGenerator:
         *,
         requested: int | str = 1,
         request_instruction: str,
-        history_section: str = "",
+        accepted_siblings_section: str = "",
         history: list | None = None,
     ) -> str:
         """Adapt independent's existing tool-question prompt for seed collection."""
         values = {
-            "system_prompt": self.generation_prompt,
+            "generation_system_prompt": self.generation_prompt,
             "instructions": self.build_custom_instructions_text(),
             "examples": self.build_examples_text(num_examples),
             "subtopics": self.build_subtopics_text(path),
             "tools_section": self.build_tools_section(),
-            "history_section": history_section,
-            "accepted_siblings_section": history_section,
+            "accepted_siblings_section": accepted_siblings_section,
             "history": json.dumps(history or [], ensure_ascii=False),
             "requested": requested,
             "request_instruction": request_instruction,
@@ -1102,10 +1098,10 @@ class DataSetGenerator:
         # Preserve independent's existing basic/CoT scenario templates and wrapper.
         # Adapt only the collection count, output shape and accepted-sibling context.
         prompt = self._get_prompt_template()
-        for name in ("system_prompt", "instructions", "examples", "subtopics"):
+        for name in ("generation_system_prompt", "instructions", "examples", "subtopics"):
             prompt = prompt.replace("{{{{" + name + "}}}}", values[name])
-        if history_section:
-            prompt += f"\n{history_section}"
+        if accepted_siblings_section:
+            prompt += f"\n{accepted_siblings_section}"
         prompt = SingleTurnAgentBuilder.build_user_question_prompt(
             prompt, requested=requested, collection=True, collection_request=request_instruction
         )
@@ -1938,7 +1934,7 @@ class DataSetGenerator:
                 num_example_demonstrations,
                 requested=requested,
                 request_instruction=request,
-                history_section=siblings,
+                accepted_siblings_section=siblings,
                 history=accepted_siblings,
             )
         if (
@@ -1978,7 +1974,7 @@ class DataSetGenerator:
                 compatibility_template("bulk_cot_seed", "format"),
                 allocation,
                 num_example_demonstrations,
-                system_prompt=self.generation_prompt,
+                generation_system_prompt=self.generation_prompt,
                 instructions=self.build_custom_instructions_text(),
                 examples=examples,
                 subtopics=self.build_subtopics_text(allocation["path"]),
@@ -1992,7 +1988,6 @@ class DataSetGenerator:
                 request_instruction=request,
                 requested=requested,
                 history=json.dumps(accepted_siblings, ensure_ascii=False),
-                history_section=siblings,
                 tools_section="",
                 output_instructions=default_template("output_seed_conversation"),
             )
@@ -2002,7 +1997,7 @@ class DataSetGenerator:
             request += f"\n\nAdditional Instructions: {self.config.instructions}"
         common = {
             "request_instruction": request,
-            "system_prompt": self.generation_prompt,
+            "generation_system_prompt": self.generation_prompt,
             "subtopics": self.build_subtopics_text(allocation["path"]),
             "instructions": self.build_custom_instructions_text(),
             "examples": self.build_examples_text(num_example_demonstrations),
@@ -2028,7 +2023,6 @@ class DataSetGenerator:
                 **common,
                 requested=requested,
                 history=json.dumps(accepted_siblings, ensure_ascii=False),
-                history_section=siblings,
                 record_instructions=self._bulk_record_instructions(),
                 output_instructions=self._bulk_record_instructions(),
             )
@@ -2057,7 +2051,6 @@ class DataSetGenerator:
             else self._bulk_record_instructions(),
             requested=requested,
             history=json.dumps(accepted_siblings, ensure_ascii=False),
-            history_section=siblings,
         )
 
     async def _collect_bulk_topic_records(
@@ -2340,7 +2333,7 @@ class DataSetGenerator:
             allocation,
             num_example_demonstrations,
             seed=json.dumps(seed, ensure_ascii=False),
-            system_prompt=self.dataset_system_prompt,
+            dataset_system_prompt=self.dataset_system_prompt,
             seed_section=(
                 ""
                 if agent
@@ -2485,7 +2478,7 @@ class DataSetGenerator:
                 BULK_COMPLETION_PROMPT,
                 allocation,
                 num_example_demonstrations,
-                system_prompt=self.dataset_system_prompt,
+                dataset_system_prompt=self.dataset_system_prompt,
                 seed_field=json.dumps(seed_field),
                 seed=json.dumps(seed, ensure_ascii=False),
                 subtopics=self.build_subtopics_text(allocation["path"])
@@ -2724,7 +2717,7 @@ class DataSetGenerator:
         later: bool | None = None,
     ) -> str:
         """Use the same context formatting for previews and real sequential calls."""
-        history_section = ""
+        sequential_history = ""
         if history:
             if self.config.shared_scope == "full":
                 description = default_template("history_header_full")
@@ -2735,7 +2728,7 @@ class DataSetGenerator:
                 )
             else:
                 description = default_template("history_header_conversation")
-            history_section = render_template(
+            sequential_history = render_template(
                 default_template("sequential_history"),
                 {
                     "description": description,
@@ -2750,7 +2743,7 @@ class DataSetGenerator:
                 num_example_demonstrations,
                 allocation["path"],
                 prompt_step=step,
-                history_section=history_section,
+                sequential_history=sequential_history,
                 history=history,
             )
         return self._format_prompt_step(
@@ -2758,12 +2751,12 @@ class DataSetGenerator:
             SEQUENTIAL_SAMPLE_PROMPT,
             allocation,
             num_example_demonstrations,
-            system_prompt=self.generation_prompt,
+            generation_system_prompt=self.generation_prompt,
             subtopics=self.build_subtopics_text(allocation["path"]),
             instructions=self.build_custom_instructions_text(),
             examples=self.build_examples_text(num_example_demonstrations),
             tools_section=self.build_tools_section(),
-            history_section=history_section,
+            sequential_history=sequential_history,
             history=json.dumps(history, ensure_ascii=False),
             output_instructions=self._single_output_instructions(),
         )
@@ -3265,23 +3258,25 @@ class DataSetGenerator:
         subtopics_list: list[str] | None = None,
         *,
         prompt_step: str = "full_sample",
-        history_section: str = "",
+        sequential_history: str = "",
         history: list | None = None,
     ) -> str:
-        prompt = data_creation_prompt.replace("{{{{system_prompt}}}}", self.generation_prompt)
+        prompt = data_creation_prompt.replace(
+            "{{{{generation_system_prompt}}}}", self.generation_prompt
+        )
         prompt = prompt.replace("{{{{instructions}}}}", self.build_custom_instructions_text())
         examples = self.build_examples_text(num_example_demonstrations)
         prompt = prompt.replace("{{{{examples}}}}", examples)
         prompt = prompt.replace("{{{{subtopics}}}}", self.build_subtopics_text(subtopics_list))
-        if history_section:
-            prompt += f"\n{history_section}"
+        if sequential_history:
+            prompt += f"\n{sequential_history}"
         return self._apply_prompt_override(
             prompt_step,
             prompt,
             subtopics_list,
             num_example_demonstrations,
             examples=examples,
-            history_section=history_section,
+            sequential_history=sequential_history,
             history=json.dumps(history or [], ensure_ascii=False),
         )
 

@@ -15,14 +15,14 @@ generation:
 `prompts/bulk-full.txt` (relative to the YAML file):
 
 ```text
-{{ system_prompt }}
+{{ generation_system_prompt }}
 {{ instructions }}
 {{ examples }}
 {{ subtopics }}
 
 Generate {{ requested }} distinct, complete JSON records.
 Return an object with an "items" list matching the supplied schema.
-{{ history_section }}
+{{ accepted_siblings_section }}
 ```
 
 For the diverse-versus-distinct experiment, keep everything else identical and
@@ -67,8 +67,8 @@ generation:
 `prompts/sequential-later.txt` can place history first:
 
 ```text
-{{ history_section }}
-{{ system_prompt }}
+{{ sequential_history }}
+{{ generation_system_prompt }}
 {{ instructions }}
 {{ examples }}
 {{ subtopics }}
@@ -76,7 +76,7 @@ generation:
 {{ output_instructions }}
 ```
 
-Move `{{ history_section }}` elsewhere to test another position, or use
+Move `{{ sequential_history }}` elsewhere to test another position, or use
 `{{ history }}` for the JSON array with your own framing. The first sample
 continues to use `full_sample` or the built-in sequential prompt. Later calls
 fall back to `full_sample` (including the legacy scalar alias), then the built-in
@@ -109,7 +109,6 @@ parsed again, so braces inside instructions, examples or seed data stay intact.
 
 | Placeholder | Meaning |
 |---|---|
-| `system_prompt` | Generation prompt for full samples/seeds; dataset prompt for completion |
 | `generation_system_prompt` | Text from `generation.system_prompt` |
 | `dataset_system_prompt` | `output.system_prompt`, falling back to the generation prompt |
 | `instructions` | Formatted configured instructions, or empty text |
@@ -127,11 +126,15 @@ Full-sample, sequential-later and seed templates additionally accept:
 | `output_instructions` | Output guidance for the selected step: seed-only collections or complete records/conversations |
 | `record_instructions` | Record/conversation guidance used by the built-in bulk full template |
 | `history` | JSON array of earlier successful records or seed values; `[]` when empty |
-| `history_section` | Formatted history/accepted-sibling section; empty on the first call |
+| `sequential_history` | Formatted sequential history; empty without prior successes or outside sequential mode |
 | `accepted_siblings_section` | Bulk accepted-sibling section; empty outside bulk or without accepted siblings |
 | `additional_instructions` | Additional-instructions label and configured text, or empty; used after CoT collection context |
 | `seed_field` | JSON-quoted configured seed-field name, or empty without one |
 | `scope` | Configured `seed` or `full` sharing scope |
+
+Use `sequential_history` for sequential framing and `accepted_siblings_section`
+for bulk retry framing. Each is empty outside its mode; `history` exposes the
+underlying JSON array in either mode. The `history_section` name is not accepted.
 
 Completion templates additionally accept:
 
@@ -143,6 +146,11 @@ Completion templates additionally accept:
 | `context_guidance` | Custom-schema guidance about supplied topic context versus pinned-seed context; empty for conversation completion |
 | `output_instructions` | Default completion-output guidance |
 | `retry_feedback` | Current custom-schema validation feedback, or empty |
+
+`generation_system_prompt` and `dataset_system_prompt` retain the same meaning in every
+stage. Built-in full-sample and seed templates use `generation_system_prompt`;
+completion templates use `dataset_system_prompt`. The `system_prompt` placeholder
+is not accepted in sample templates.
 
 Unavailable step-specific placeholders are errors. Optional values render as
 documented empty strings; no sections are automatically appended to a custom
