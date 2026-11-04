@@ -25,11 +25,8 @@ Return an object with an "items" list matching the supplied schema.
 {{ accepted_siblings_section }}
 ```
 
-For the diverse-versus-distinct experiment, keep everything else identical and
-change only that word in two versioned template files. The built-in templates
-are packaged as text files under `deepfabric/templates/`; copy the applicable
-template rather than changing installed defaults. Replace its
-`{{ request_instruction }}` line with your experimental instruction.
+Built-in sample and topic templates are packaged under
+`deepfabric/templates/`. Copy a template to customize its framing.
 
 ## Steps and sources
 
@@ -50,6 +47,8 @@ to that YAML file. Inline text is also supported.
 | Bulk seed/user-request collection | `generation.prompt_templates.seed` | `prompts/seed.txt` |
 | Bulk non-tool seed completion | `generation.prompt_templates.completion` | `prompts/completion.txt` |
 | Bulk full-record collection | `generation.prompt_templates.full_sample` | `prompts/bulk-full.txt` |
+| Tool agent: choose each action | `generation.prompt_templates.agent_step` | `prompts/agent-step.txt` |
+| Tool agent: final assistant reply | `generation.prompt_templates.agent_response` | `prompts/agent-response.txt` |
 
 For tool-call conversations, the sample and seed settings customize the user
 request, as described below. Bulk/full does not support tool-call conversations.
@@ -59,11 +58,28 @@ output format. An override replaces that step's framing; include the context
 and history placeholders you want the model to receive. The response schema,
 seed pinning, validation, retries and output assembly remain controlled by code.
 
+For sequential sampling, the first sample uses `full_sample`. Later samples
+use `sequential_later`, falling back to `full_sample`, then the built-in prompt.
+Selection follows the sample's ordinal within its topic, including resume,
+even when earlier samples failed.
+
+Each override accepts inline text, `{text: ...}`, or `{file: ...}`. Files must
+be UTF-8. Relative paths resolve against the YAML config directory; direct
+Python configuration resolves them against the working directory. Sources are
+loaded and validated when configuration is created, so file edits during a run
+do not change subsequent requests. Empty text, unknown steps or placeholders,
+missing files, and conflicting text/file sources fail before generation.
+
+`generation.prompt_template` is a shorthand for
+`generation.prompt_templates.full_sample` and cannot be combined with an
+explicit `full_sample` override. It also accepts `{{{{ name }}}}` placeholders.
+
 ### Tool-call conversations
 
 The agent first obtains a user request, chooses actions using structured LLM
 output, executes tools through Spin, and generates a final assistant reply.
-Templates customize the request-generation stage, not every call in that flow.
+Templates can customize all three LLM stages independently. The action and reply
+overrides apply in independent, sequential, and bulk/seed sampling.
 
 | Agent stage | Template setting or behavior |
 |---|---|
@@ -71,12 +87,12 @@ Templates customize the request-generation stage, not every call in that flow.
 | Later sequential request | `generation.prompt_templates.sequential_later`; falls back to `full_sample`, then the built-in prompt |
 | Bulk user-request collection | `generation.prompt_templates.seed` supplies the collection prompt |
 | Start an agent for a collected request | The collected request is pinned; no new question-generation call |
-| Choose the next action / tool calls | Fixed agent-builder prompt; no template override key |
+| Choose the next action / tool calls | `generation.prompt_templates.agent_step` replaces the prompt on every action, including retries |
 | Execute tools | Spin execution; no LLM template |
-| Write the final assistant reply | Fixed agent-builder prompt using the dataset system prompt; no template override key |
+| Write the final assistant reply | `generation.prompt_templates.agent_response` replaces the final reply prompt |
 
 A bulk tool conversation can accept and render a `completion` override, but the
-agent uses its pinned request and fixed action/final-reply builders instead of
+agent uses its pinned request and the action/final-reply templates instead of
 that rendered prompt. `generation.prompt_templates.completion` therefore does
 not customize those tool-agent calls. It controls non-tool conversation and
 custom-schema completions.
@@ -86,54 +102,70 @@ scenario text in tool mode. Bulk `seed` overrides supply the collection prompt
 directly. Including `raw_tools`, `tools`, or `tools_section` chooses how tool
 information appears in that template; it does not change execution routing.
 
-### Positioning sequential history
-
-Set `sequential_later` to control later prompts independently. For example:
+For example, extend the existing action prompt and replace the final reply prompt:
 
 ```yaml
 generation:
-  topic_sample_mode: sequential
-  shared_scope: full
   prompt_templates:
-    sequential_later:
-      file: prompts/sequential-later.txt
+    agent_step:
+      text: |
+        {{ default_prompt }}
+        Prefer read operations when gathering evidence.
+    agent_response:
+      file: prompts/agent-response.txt
 ```
 
-`prompts/sequential-later.txt` can place history first:
+`prompts/agent-response.txt` could contain:
 
 ```text
-{{ sequential_history }}
-{{ generation_system_prompt }}
-{{ instructions }}
-{{ examples }}
-{{ subtopics }}
-
-{{ output_instructions }}
+{{ dataset_system_prompt }}
+User request: {{ user_request }}
+Tool results: {{ tool_results }}
+Give a concise answer grounded in these results.
 ```
 
-Move `{{ sequential_history }}` elsewhere to test another position, or use
-`{{ history }}` for the JSON array with your own framing. The first sample
-continues to use `full_sample` or the built-in sequential prompt. Later calls
-fall back to `full_sample` (including the legacy scalar alias), then the built-in
-prompt, if no `sequential_later` override is supplied.
+Omitting either key preserves its existing prompt. These defaults are assembled
+in the agent builder; `default_prompt` exposes the complete default for that call,
+including any retry notice. Overrides change prompt text only: `AgentStep` and
+`AgentResponse` response schemas, tool execution, retry budgets, pinned requests,
+and dataset assembly stay the same. Template files are snapshotted and included
+in provenance reports just like other generation templates. Dry-run previews
+show both stages with representative action/result data.
 
-Selection follows the sample's ordinal within its topic, including resume.
-If earlier slots failed, a later call still uses `sequential_later`, but its
-history may be empty. History contains only earlier successful siblings: seed
-values in seed scope, complete records in full scope. Both previews and reports
-include the new override; use `--verbose` to preview the later-call case.
+### Tool-agent fields
 
-Each value is either inline text, `{text: ...}`, or `{file: ...}`. Files must be
-UTF-8. Relative paths resolve against the YAML config directory; direct Python
-configuration resolves them against the working directory. Sources are loaded
-and validated when configuration is created, so editing a file mid-run does
-not change subsequent requests. Empty text, unknown steps, unknown placeholders,
-missing files and conflicting text/file sources fail before generation.
+Both `agent_step` and `agent_response` accept the fields below. Their context is
+the current agent execution; sample collection fields such as `num_items`,
+`seed`, and sibling history belong to the earlier request-generation stage.
+The rendering rules below also apply here: arrays become JSON text, strings
+preserve whitespace, and inserted values are not interpreted as placeholders.
 
-The formerly ignored `prompt_template` scalar is now a supported shorthand for
-`prompt_templates.full_sample`, in YAML and Python. It cannot be combined with
-an explicit `full_sample` override. Legacy `{{{{ name }}}}` placeholders in
-that scalar are accepted alongside the syntax below.
+<div class="column-toggle-table" data-toggle-columns="3,4,5" data-hidden-columns="3,4,5" markdown="1">
+
+| Placeholder | Source | Type | Related framed field | When empty |
+|---|---|---|---|---|
+| `generation_system_prompt` | `generation.system_prompt` | Text | | Required |
+| `dataset_system_prompt` | `output.system_prompt`, falling back to `generation.system_prompt` | Text | | Uses fallback |
+| `raw_instructions` | `generation.instructions` | Text | | Unset → blank; preserve whitespace |
+| `user_request` | Run time: generated or pinned user message | Text | | Empty → blank |
+| `raw_tools` | Run time: resolved `ToolDefinition` dictionaries | Array | `tools` | No tools → `[]` |
+| `steps` | Run time: preceding `AgentStep` objects; all steps for the final reply | Array | `step_history` | No steps → `[]` |
+| `tool_results` | Run time: completed `ToolExecution` objects | Array | `step_history`, `tool_results_text` | No results → `[]` |
+| `raw_retry_feedback` | Run time: error passed to the current action attempt | Text | `default_prompt` | No error / final reply → blank |
+| `context` | Run time: previous conversation passed to the final reply builder | Text | `default_prompt` | Current single-turn flow / action stage → blank |
+
+</div>
+
+<div class="column-toggle-table" data-toggle-columns="3,4" data-hidden-columns="3,4" markdown="1">
+
+| Placeholder | Meaning | Related raw field | When empty |
+|---|---|---|---|
+| `tools` | Agent tool catalog with parameters and return descriptions | `raw_tools` | No tools → blank |
+| `step_history` | Actions, reasoning, and results by step | `steps`, `tool_results` | No steps → blank |
+| `tool_results_text` | Tool names and result summaries | `tool_results` | No results → `No tools were executed.` |
+| `default_prompt` | Complete built-in prompt for this stage and call | | Always set |
+
+</div>
 
 ## Placeholder contract
 
@@ -158,7 +190,9 @@ table to show Type, related fields, or When empty details.
 
 All six new raw fields (`raw_instructions`, `raw_examples`, `raw_tools`,
 `raw_seed_field`, `raw_retry_feedback`, and `topic_path_json`) are accepted in all
-four sample stages. Existing fields retain the following stage availability:
+four request/sample stages (`full_sample`, `sequential_later`, `seed`, `completion`).
+Tool-agent stages have their own context, listed above. Existing sample fields
+retain the following stage availability:
 
 | Stages | Existing fields |
 |---|---|
@@ -166,9 +200,9 @@ four sample stages. Existing fields retain the following stage availability:
 | `full_sample`, `sequential_later`, `seed` | `additional_instructions`, `request_instruction`, `record_instructions`, `history`, `sequential_history`, `accepted_siblings_section`, `scope` |
 | `completion` | `seed`, `seed_section`, `context_guidance`, `retry_feedback` |
 
-Accepted does not mean populated in every call. In particular,
-`raw_retry_feedback` currently receives errors only on custom-schema bulk
-completion retries. Unknown or unavailable stage-specific names are validation
+Accepted does not mean populated in every call. In these four stages,
+`raw_retry_feedback` receives errors only on custom-schema bulk completion retries. It also exposes errors supplied to `agent_step`, as described
+above. Unknown or unavailable stage-specific names are validation
 errors.
 
 ### Raw and content-only sample fields
@@ -241,6 +275,13 @@ graph targets and canonical first-parent ancestry. They remain available when
 `raw_tools` uses DeepFabric's resolved `ToolDefinition` dictionary shape,
 including parameter definitions, returns, category, and component. It is not a
 provider-specific tool API schema. Raw and framed examples share one selection.
+
+Sequential history contains only earlier successful samples for the same topic:
+seed values in seed scope, complete records in full scope. It can be empty on a
+later sample if all earlier samples failed. `history` exposes the JSON array;
+`sequential_history` adds framing and repetition guidance. In tool mode, this
+history informs user-request generation; action and reply templates receive
+the current agent's steps and tool results instead.
 
 `sequential_history` includes scope in its tag and uses scope to choose its
 description. `request_instruction` uses scope to choose wording, without
