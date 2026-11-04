@@ -135,6 +135,26 @@ def test_agent_preview_includes_all_stages_and_remote_placeholders(
     assert "{{{user request}}}" in result.output
 
 
+def test_agent_preview_uses_configured_stage_templates(tmp_path, config_data, offline_guard):
+    config_data["generation"]["tools"] = {
+        "custom": [
+            {"name": "lookup", "description": "Lookup data", "parameters": [], "returns": "data"}
+        ]
+    }
+    template = tmp_path / "agent-response.txt"
+    template.write_text("CUSTOM_REPLY {{ user_request }} {{ tool_results }}", encoding="utf-8")
+    config_data["generation"]["prompt_templates"] = {
+        "agent_step": {"text": "CUSTOM_ACTION {{ user_request }} {{ raw_tools }} {{ steps }}"},
+        "agent_response": {"file": "agent-response.txt"},
+    }
+    result = run_preview(tmp_path, config_data)
+    assert result.exit_code == 0, result.output
+    assert "CUSTOM_ACTION" in result.output
+    assert "CUSTOM_REPLY" in result.output
+    assert "{{{tool result}}}" in result.output
+    assert "{{{user request}}}" in result.output
+
+
 @pytest.mark.parametrize("verbose, expected", [(False, 1), (True, 2)])
 def test_verbose_preview_shows_first_and_dependent_cases(
     tmp_path, config_data, offline_guard, verbose, expected

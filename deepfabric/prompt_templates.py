@@ -60,10 +60,36 @@ COMPLETION_FIELDS = frozenset(
         "retry_feedback",
     }
 )
+AGENT_FIELDS = frozenset(
+    {
+        "default_prompt",
+        "generation_system_prompt",
+        "dataset_system_prompt",
+        "raw_instructions",
+        "user_request",
+        "raw_tools",
+        "tools",
+        "steps",
+        "tool_results",
+        "step_history",
+        "tool_results_text",
+        "context",
+        "raw_retry_feedback",
+    }
+)
 PLACEHOLDER = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 LEGACY_PLACEHOLDER = re.compile(r"\{\{\{\{\s*([A-Za-z_]\w*)\s*\}\}\}\}")
-Step = Literal["full_sample", "sequential_later", "seed", "completion"]
-TEMPLATE_STEPS = ("full_sample", "sequential_later", "seed", "completion")
+Step = Literal[
+    "full_sample", "sequential_later", "seed", "completion", "agent_step", "agent_response"
+]
+TEMPLATE_STEPS = (
+    "full_sample",
+    "sequential_later",
+    "seed",
+    "completion",
+    "agent_step",
+    "agent_response",
+)
 
 
 def normalize_legacy(text: str) -> str:
@@ -111,11 +137,12 @@ TOPIC_FIELDS = frozenset(
 def validate_template(text: str, step: str) -> None:
     if not text.strip():
         raise ValueError(f"{step} prompt template must not be empty")
-    allowed = (
-        TOPIC_FIELDS
-        if step in ("initial", "expansion")
-        else COMMON_FIELDS | (COMPLETION_FIELDS if step == "completion" else COLLECTION_FIELDS)
-    )
+    if step in ("initial", "expansion"):
+        allowed = TOPIC_FIELDS
+    elif step in ("agent_step", "agent_response"):
+        allowed = AGENT_FIELDS
+    else:
+        allowed = COMMON_FIELDS | (COMPLETION_FIELDS if step == "completion" else COLLECTION_FIELDS)
     unknown = placeholders(normalize_legacy(text)) - allowed
     if unknown:
         raise ValueError(
@@ -198,8 +225,10 @@ class GenerationPromptTemplates(BaseModel):
     sequential_later: PromptTemplateSource | None = None
     seed: PromptTemplateSource | None = None
     completion: PromptTemplateSource | None = None
+    agent_step: PromptTemplateSource | None = None
+    agent_response: PromptTemplateSource | None = None
 
-    @field_validator("full_sample", "sequential_later", "seed", "completion", mode="before")
+    @field_validator(*TEMPLATE_STEPS, mode="before")
     @classmethod
     def inline_source(cls, value):
         return {"text": value} if isinstance(value, str) else value
