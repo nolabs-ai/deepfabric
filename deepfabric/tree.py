@@ -317,12 +317,18 @@ class Tree(TopicModel):
             topic_prompt=self.topic_prompt,
             current_topic=node_path[-1] if node_path else "",
             topic_path=" -> ".join(node_path),
+            topic_path_json=node_path,
             num_subtopics=num_subtopics,
             num_items=num_subtopics,
             examples=TreePromptBuilder._format_examples(
                 TreePromptBuilder.EXAMPLES.get(domain, TreePromptBuilder.EXAMPLES["general"])
             ),
             current_graph_summary="",
+            raw_examples=TreePromptBuilder.EXAMPLES.get(
+                domain, TreePromptBuilder.EXAMPLES["general"]
+            )[:3],
+            raw_graph=None,
+            raw_tree=self.to_dict(),
             prompt_style="tree",
             mode="tree",
         )
