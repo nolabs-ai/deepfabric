@@ -415,7 +415,14 @@ Example format: "Can you tell me the weather in Paris tomorrow and suggest what 
                 f"\n## Previous Attempt Failed\nError: {error_feedback}\nPlease fix this issue.\n",
             )
 
-        prompt = "\n".join(prompt_parts)
+        prompt = self._render_agent_prompt(
+            "agent_step",
+            "\n".join(prompt_parts),
+            user_message,
+            previous_steps,
+            previous_results,
+            error_feedback=error_feedback,
+        )
 
         # Always use non-streaming for reliable structured output
         response = await self.llm.generate_async(
@@ -588,10 +595,53 @@ Example format: "Can you tell me the weather in Paris tomorrow and suggest what 
             )
         return ToolOutput(result=error_msg)
 
+    def _render_agent_prompt(
+        self,
+        stage: str,
+        default_prompt: str,
+        user_message: ChatMessage,
+        steps: list[AgentStep],
+        tool_results: list[ToolExecution],
+        *,
+        error_feedback: str | None = None,
+        context: str = "",
+    ) -> str:
+        """Render a stage override from the current agent execution state."""
+        source = getattr(self.config.prompt_templates, stage)
+        if source is None:
+            return default_prompt
+        return render_template(
+            source.content,
+            {
+                "default_prompt": default_prompt,
+                "generation_system_prompt": self.config.generation_system_prompt,
+                "dataset_system_prompt": (
+                    self.config.dataset_system_prompt or self.config.generation_system_prompt
+                ),
+                "raw_instructions": self.config.instructions,
+                "user_request": user_message.content,
+                "raw_tools": [tool.model_dump(mode="json") for tool in self.tool_registry.tools],
+                "tools": self._format_tools_for_prompt(),
+                "steps": [step.model_dump(mode="json") for step in steps],
+                "tool_results": [result.model_dump(mode="json") for result in tool_results],
+                "step_history": self._format_step_history(steps, tool_results),
+                "tool_results_text": (
+                    "\n".join(
+                        f"Tool: {result.function_name}\nResult: {result.result}"
+                        for result in tool_results
+                    )
+                    if tool_results
+                    else "No tools were executed."
+                ),
+                "context": context,
+                "raw_retry_feedback": error_feedback,
+            },
+        )
+
     async def _generate_agent_conclusion(
         self,
         user_message: ChatMessage,
-        steps: list[AgentStep],  # noqa: ARG002 - kept for potential future use
+        steps: list[AgentStep],
         tool_results: list[ToolExecution],
         context: str = "",
     ) -> ChatMessage:
@@ -633,6 +683,9 @@ You executed these tools:
 
 Based on these results, provide a clear, helpful response to the user.
 Remember: You have access to the tools listed above and have used them in this conversation."""
+        prompt = self._render_agent_prompt(
+            "agent_response", prompt, user_message, steps, tool_results, context=context
+        )
 
         # Always use non-streaming for reliable structured output
         response = await self.llm.generate_async(
