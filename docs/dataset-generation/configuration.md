@@ -237,13 +237,16 @@ Controls final dataset.
 | `checkpoint` | object | - | Checkpoint configuration (see below) |
 
 !!! tip "Auto and Percentage Samples"
-    `num_samples` supports special values:
+    `num_samples` supports the following values:
 
     - **Integer** (e.g., `100`): Generate exactly this many samples
-    - **`"auto"`**: Sample count equals the number of root-to-leaf paths in the topic model
-    - **Percentage** (e.g., `"50%"`, `"200%"`): Sample count relative to that same path count
+    - **`"auto"`**: One sample per unique topic (one full cycle)
+    - **Percentage** (e.g., `"50%"`, `"200%"`): Sample count relative to the number of unique topics
 
-    For trees, path count equals unique topic count. For graphs the two differ — paths are root-to-leaf routes, while generation cycles over every node — so `"auto"` on a graph does not guarantee one sample per topic.
+    For trees, only the final topic on each branch is counted. 
+    
+    For graphs, every non-root topic is counted, **includes intermediate topics**.
+    Connecting a graph topic to additional parents does not increase the count.
 
     When `num_samples` exceeds the number of unique topics, DeepFabric iterates through multiple **cycles**. Each cycle processes all unique topics once. For example, with 50 unique topics and `num_samples: 120`:
 
