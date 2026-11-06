@@ -194,7 +194,7 @@ output:
 
   include_system_message: true  # Whether to include system message in output
   num_samples: 4                 # Total training samples to generate
-  batch_size: 3                 # Parallel generation batch size
+  batch_size: 3                 # Maximum concurrent topic tasks
   save_as: "api-dataset.jsonl"
 
  Optional: Upload to Hugging Face

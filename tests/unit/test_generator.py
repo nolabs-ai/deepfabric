@@ -65,6 +65,7 @@ def test_create_data_success(data_engine):
     )
 
     topic_tree = MagicMock()
+    topic_tree.get_path_by_id.return_value = None
     topic_tree.tree_paths = [
         "path1",
         "path2",
@@ -109,6 +110,7 @@ def test_create_data_with_sys_msg_default(data_engine):
     )
 
     topic_tree = MagicMock()
+    topic_tree.get_path_by_id.return_value = None
     topic_tree.tree_paths = ["path1"]
     topic_tree.get_all_paths.return_value = [["path1"]]
     topic_tree.get_all_paths_with_ids.return_value = [TopicPath(path=["path1"], topic_id="uuid-1")]
@@ -139,6 +141,7 @@ def test_create_data_without_sys_msg(data_engine):
     )
 
     topic_tree = MagicMock()
+    topic_tree.get_path_by_id.return_value = None
     topic_tree.tree_paths = ["path1"]
     topic_tree.get_all_paths.return_value = [["path1"]]
     topic_tree.get_all_paths_with_ids.return_value = [TopicPath(path=["path1"], topic_id="uuid-1")]
@@ -188,6 +191,7 @@ def test_create_data_sys_msg_override():
     )
 
     topic_tree = MagicMock()
+    topic_tree.get_path_by_id.return_value = None
     topic_tree.tree_paths = ["path1"]
     topic_tree.get_all_paths.return_value = [["path1"]]
     topic_tree.get_all_paths_with_ids.return_value = [TopicPath(path=["path1"], topic_id="uuid-1")]

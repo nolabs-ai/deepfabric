@@ -55,7 +55,7 @@ class TopicModel(ABC):
 
         For generation, we iterate over unique topics rather than paths.
         This is important for graphs where multiple paths can lead to the
-        same topic node - we only want to generate one sample per unique topic.
+        same topic node. Each UUID receives one allocation quota, independent of route count.
 
         Returns:
             List of Topic namedtuples containing (uuid, topic).

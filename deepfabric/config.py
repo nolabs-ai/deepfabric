@@ -319,7 +319,7 @@ class OutputConfig(BaseModel):
     batch_size: int = Field(
         default=ENGINE_DEFAULT_BATCH_SIZE,
         ge=1,
-        description="Number of samples to process at a time",
+        description="Maximum concurrent topic tasks (sample batch size without a topic model)",
     )
     save_as: str = Field(..., min_length=1, description="Where to save the final dataset")
 
