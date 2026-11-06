@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, Field
 
 from .progress import ProgressReporter
-from .schemas import ChatMessage, Conversation
+from .schemas import ChatMessage, Conversation, ReasoningTrace
 from .stream_simulator import simulate_stream
 
 if TYPE_CHECKING:
@@ -50,7 +50,13 @@ class ConversationBuilder(ABC):
         self.progress_reporter = progress_reporter
 
     @abstractmethod
-    async def generate(self, topic_prompt: str, error_feedback: str | None = None) -> Conversation:
+    async def generate(
+        self,
+        topic_prompt: str,
+        error_feedback: str | None = None,
+        *,
+        pinned_user_message: ChatMessage | None = None,
+    ) -> Conversation:
         """Generate a complete conversation.
 
         Args:
@@ -113,6 +119,26 @@ def determine_builder_type(config: "DataSetGeneratorConfig") -> BuilderType:
     raise ValueError(msg)
 
 
+class AssistantCompletion(BaseModel):
+    """Assistant-only output: the user message is pinned and assembled in code."""
+
+    model_config = {"extra": "forbid"}
+    content: str = Field(min_length=1)
+
+
+class ReasonedAssistantCompletion(AssistantCompletion):
+    reasoning: ReasoningTrace
+
+
+def pinned_user_copy(message: ChatMessage) -> ChatMessage:
+    """Validate and copy a pinned request without trimming or regenerating its text."""
+    if message.role != "user" or not isinstance(message.content, str) or not message.content:
+        raise ValueError("Pinned user validation error: expected a nonempty user request")
+    if message.tool_calls or message.tool_call_id:
+        raise ValueError("Pinned user validation error: user requests cannot contain tool calls")
+    return message.model_copy(deep=True)
+
+
 class SingleShotBuilder(ConversationBuilder):
     """Builder for simple conversations using single-shot JSON generation.
 
@@ -123,12 +149,21 @@ class SingleShotBuilder(ConversationBuilder):
     - Any conversation that can be generated in one pass
     """
 
-    async def generate(self, topic_prompt: str, error_feedback: str | None = None) -> Conversation:
+    async def generate(
+        self,
+        topic_prompt: str,
+        error_feedback: str | None = None,
+        *,
+        pinned_user_message: ChatMessage | None = None,
+        prompt_step: str = "full_sample",
+    ) -> Conversation:
         """Generate conversation using single LLM call with JSON schema.
 
         Args:
             topic_prompt: Topic or scenario to generate conversation about
             error_feedback: Optional error message from a previous failed attempt
+            prompt_step: Selected whole-sample template step, used to identify
+                custom templates that supply the complete prompt.
 
         Returns:
             Complete Conversation object
@@ -136,8 +171,20 @@ class SingleShotBuilder(ConversationBuilder):
         Raises:
             ValueError: If LLM fails to generate valid conversation
         """
-        # Build the generation prompt
-        generation_prompt = self._build_prompt(topic_prompt, error_feedback)
+        if pinned_user_message is not None:
+            return await self._complete_pinned_user(
+                topic_prompt, pinned_user_message, error_feedback
+            )
+        source = getattr(self.config.prompt_templates, prompt_step)
+        if prompt_step == "sequential_later" and source is None:
+            source = self.config.prompt_templates.full_sample
+        custom_template = source is not None or self.config.prompt_template is not None
+        if custom_template:
+            generation_prompt = topic_prompt
+            if error_feedback:
+                generation_prompt += f"\nRETRY: {error_feedback}"
+        else:
+            generation_prompt = self._build_prompt(topic_prompt, error_feedback)
 
         # Always use non-streaming for reliable structured output
         conversation = await self._generate_non_streaming(generation_prompt)
@@ -170,6 +217,46 @@ class SingleShotBuilder(ConversationBuilder):
 
         return conversation
 
+    async def _complete_pinned_user(
+        self, prompt: str, user_message: ChatMessage, error_feedback: str | None
+    ) -> Conversation:
+        user_message = pinned_user_copy(user_message)
+        schema = (
+            ReasonedAssistantCompletion
+            if self.config.conversation_type == "cot"
+            else AssistantCompletion
+        )
+        if error_feedback:
+            prompt += f"\nRETRY: {error_feedback}"
+        result = await self.llm.generate_async(
+            prompt=prompt,
+            schema=schema,
+            max_tokens=self.config.max_tokens,
+            temperature=self.config.temperature,
+        )
+        reasoning = result.reasoning if isinstance(result, ReasonedAssistantCompletion) else None
+        if self.config.conversation_type == "cot" and (
+            reasoning is None or reasoning.style != (self.config.reasoning_style or "freetext")
+        ):
+            raise ValueError("Assistant completion validation error: reasoning style mismatch")
+        messages = [user_message, ChatMessage(role="assistant", content=result.content)]
+        if self.config.sys_msg:
+            messages.insert(
+                0,
+                ChatMessage(
+                    role="system",
+                    content=self.config.dataset_system_prompt
+                    or self.config.generation_system_prompt,
+                ),
+            )
+        conversation = Conversation(messages=messages, reasoning=reasoning)
+        simulate_stream(
+            self.progress_reporter,
+            conversation.model_dump_json(indent=2),
+            source="conversation_gen",
+        )
+        return conversation
+
     async def _generate_non_streaming(self, prompt: str) -> Conversation:
         """Generate conversation using non-streaming LLM call.
 
@@ -187,21 +274,26 @@ class SingleShotBuilder(ConversationBuilder):
             temperature=self.config.temperature,
         )
 
-    def _build_prompt(self, topic_prompt: str, error_feedback: str | None = None) -> str:
+    def _build_prompt(
+        self,
+        topic_prompt: str,
+        error_feedback: str | None = None,
+        *,
+        num_items: int | str | None = None,
+    ) -> str:
         """Build the generation prompt for single-shot generation.
 
         Args:
             topic_prompt: The topic to generate about
             error_feedback: Optional error message from a previous failed attempt
+            num_items: Number of complete conversations for bulk/full collection;
+                omitted for an individual conversation.
 
         Returns:
             Complete prompt string for the LLM
         """
         # Use the generation system prompt as the base
-        prompt_parts = [self.config.generation_system_prompt]
-
-        # Add topic/scenario
-        prompt_parts.append(f"\nTopic/Scenario: {topic_prompt}")
+        prompt_parts = [self.config.generation_system_prompt, f"\nTopic/Scenario: {topic_prompt}"]
 
         # Add error feedback if this is a retry
         if error_feedback:
@@ -231,11 +323,19 @@ class SingleShotBuilder(ConversationBuilder):
                 )
 
         # Add explicit structure requirement
-        prompt_parts.append(
-            "\nIMPORTANT: Generate the conversation messages array starting with a 'user' message "
-            "(the user's question or request), followed by an 'assistant' message (the response). "
-            "Do NOT include any 'system' role messages - those are added separately."
-        )
+        if num_items is None:
+            prompt_parts.append(
+                "\nIMPORTANT: Generate the conversation messages array starting with a 'user' message "
+                "(the user's question or request), followed by an 'assistant' message (the response). "
+                "Do NOT include any 'system' role messages - those are added separately."
+            )
+        else:
+            prompt_parts.append(
+                f"\nGenerate {num_items} diverse groups of user and assistant messages. "
+                "Return an object with an 'items' list of complete conversations. "
+                "Each conversation starts with a user request and ends with the assistant's reply. "
+                "Do not generate system messages; these are added in code."
+            )
 
         return "\n".join(prompt_parts)
 

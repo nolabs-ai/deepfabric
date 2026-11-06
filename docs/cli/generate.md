@@ -50,6 +50,8 @@ deepfabric generate config.yaml \
 !!! note "Output Organization"
     These options override the file paths specified in your configuration, useful for organizing outputs by experiment or preventing accidental overwrites.
 
+See [Existing Files and Name Clashes](#existing-files-and-name-clashes) for collision choices and filename suffixes.
+
 ## Loading Existing Topic Structures
 
 Skip topic generation by loading previously generated topic trees or graphs:
@@ -60,6 +62,10 @@ deepfabric generate config.yaml --topics-load existing_topics.jsonl
 
 !!! tip "Faster Iteration"
     This approach accelerates iteration when experimenting with dataset generation parameters while keeping the topic structure constant.
+
+See [Sample Generation Modes](../dataset-generation/sampling-modes.md) to choose independent,
+sequential, bulk/seed or bulk/full generation. Bulk collection budgets scale by the number
+requested unless `generation.bulk.max_tokens_per_call` supplies a fixed ceiling.
 
 ## Topic-Only Generation
 
@@ -110,14 +116,14 @@ deepfabric generate config.yaml \
 | Parameter | Description |
 |-----------|-------------|
 | `--num-samples` | Total samples: integer, `auto`, or percentage (e.g., `50%`, `200%`) |
-| `--batch-size` | Affects generation speed and resource usage |
+| `--batch-size` | Maximum concurrent topic tasks; samples within a topic are sequential |
 | `--include-system-message` | Include system prompts in training examples |
 | `--no-system-message` | Exclude system prompts from training examples |
 
 !!! tip "Automatic Sample Count"
-    Use `--num-samples auto` to generate exactly one sample per topic path. Use percentages like `--num-samples 50%` for partial coverage or `--num-samples 200%` to cycle through topics multiple times.
+    Use `--num-samples auto` to allocate one sample per unique topic (tree leaf or non-root graph node). Use `--num-samples 50%` to select the existing ordered prefix, or `--num-samples 200%` for two slots per topic in one pass. Terminal failures can reduce successful output rows.
 
-    Integer values larger than the number of topic paths work the same way—`--num-samples 100` with 50 paths is equivalent to `--num-samples 200%`.
+    Integer targets use the same allocation: `--num-samples 100` with 50 unique topics is equivalent to `--num-samples 200%`. Targets are never rounded to a batch multiple.
 
 ## Conversation Type Options
 
@@ -191,6 +197,55 @@ deepfabric generate config.yaml \
 
     This creates a research dataset with comprehensive topic coverage and high-quality content generation.
 
+## Prompt Tracing and Dry Runs
+
+DeepFabric builds prompts from default templates using your configuration and
+topic context.
+
+Use `--trace-prompt` to save the prompts used during topic graph/tree generation,
+expansion, and sample generation:
+
+```bash
+deepfabric generate config.yaml --trace-prompt
+```
+
+By default, only the first prompt for each stage (such as topic expansion or
+sample generation) is recorded per run. Add `--verbose` to record every prompt:
+
+```bash
+deepfabric generate config.yaml --trace-prompt --verbose
+```
+
+The trace file location is chosen in this order:
+
+1. `--trace-prompt-file PATH`
+2. `./prompt-trace.jsonl` in your current working directory
+
+```bash
+deepfabric generate config.yaml --trace-prompt --trace-prompt-file ./inspect.jsonl
+```
+
+To change topic or sample-generation templates, supply your own inline text or
+template files in YAML. See [prompt templates](../dataset-generation/prompt-templates.md).
+
+### Preview without generating data
+
+Use `--dry-run` to print prompts in the terminal without calling models,
+executing tools, or creating topic and dataset files:
+
+```bash
+deepfabric generate config.yaml --dry-run
+```
+
+Values that depend on earlier steps use placeholders such as `{{{topic path}}}`
+and `{{{tool result}}}`. Add `--verbose` to preview representative later cases,
+or `--trace-prompt` to also save the previews to a file.
+
+With `--topics-load`, bulk previews calculate the collection count from the loaded
+topics and requested sample count. Otherwise, the count remains a placeholder.
+Later collection previews show a retry, including accepted seeds only when a
+previous response was partially successful.
+
 ## Progress Monitoring
 
 The generation process provides real-time feedback:
@@ -199,6 +254,38 @@ The generation process provides real-time feedback:
 - :material-percent: Dataset generation status with completion percentages
 - :material-alert: Error reporting with retry attempts and failure categorization
 - :material-chart-bar: Final statistics including success rates and output file locations
+
+### Token usage and run reports
+
+After generation, DeepFabric prints the input, output and total token counts
+reported by providers. With checkpointing enabled, the summary shows both the
+current invocation and cumulative observed usage across resumes. Reasoning and
+cache counts are already included in the totals, so do not add them again.
+
+To keep these counts along with request timing, retries, sample outcomes and
+topic-to-output-row mappings, use `--run-report`. The report is saved beside the
+dataset as `<output-stem>.report.json`, or at a path you supply:
+
+```bash
+deepfabric generate config.yaml --run-report
+deepfabric generate config.yaml --run-report results/run.report.json
+```
+
+The report also includes input hashes and sampling settings. Its events describe
+the current invocation; cumulative token counts cover the recorded checkpoint
+history. Loading a saved graph does not add its historical token usage, though
+topic generation performed during this invocation is counted.
+
+These counts reflect observed usage rather than a complete billing record.
+Missing provider usage and usage from runs before accounting was recorded remain
+unknown, and SDK-internal retries and direct streaming usage may be unobservable.
+DeepFabric marks incomplete counts and does not estimate dollar costs.
+
+No report file is created unless requested, and dry runs do not write reports.
+Reports do not require `--debug`; use `--trace-prompt` separately to record prompts.
+After a successful run, DeepFabric prints the totals and saves any requested
+report before removing the checkpoint. If the report cannot be saved, it retains
+the checkpoint so the recorded usage is preserved.
 
 ## Checkpoint and Resume
 
@@ -249,7 +336,11 @@ On resume, the generator:
 - Optionally retries failed samples with `--retry-failed`
 
 !!! info "Memory Optimization"
-    When checkpointing is enabled, samples are flushed to disk periodically, keeping memory usage constant regardless of dataset size. This allows generating datasets with 50,000+ samples without memory issues.
+    Checkpointing periodically flushes samples to disk, reducing sample buffering during generation. Completion identities remain in memory, and final dataset assembly loads the saved rows.
+
+### Migrating Older Checkpoints
+
+Version 4 checkpoints require migration before resuming. See [Migrating Version 4 Checkpoints](../dataset-generation/configuration.md#migrating-version-4-checkpoints) for the helper command and required inputs.
 
 ### Graceful Stop
 
@@ -277,13 +368,45 @@ Choose an option [1/2/3] (1):
 
 This prevents accidentally overwriting or corrupting existing checkpoint data.
 
+Checkpoint choices are collected before topic and dataset choices. See
+[Existing Files and Name Clashes](#existing-files-and-name-clashes) for the full
+decision sequence and when files are cleared.
+
 ## Error Recovery
 
 !!! warning "Partial Failures"
     When generation fails partway through, the system saves intermediate results where possible. Topic trees are saved incrementally, enabling recovery by loading partial results and continuing from the dataset generation stage. With checkpointing enabled, dataset generation progress is also preserved.
 
+Generation errors and handled interruptions can also save partial dataset exports. See [Partial Results After Errors or Interruptions](../dataset-generation/configuration.md#partial-results-after-errors-or-interruptions) for filenames and recovery behavior.
+
 ??? tip "Optimizing Generation Performance"
     Balance `batch-size` with your API rate limits and system resources. Larger batches increase throughput but consume more memory and may trigger rate limiting. Start with smaller batches and increase based on your provider's capabilities.
+
+## Existing Files and Name Clashes
+
+Before generation, DeepFabric lists all existing files at the configured paths,
+highlighting each file's identity and showing its full path. Decisions are handled
+in order: **checkpoint → topic graph/tree → dataset output**. All choices are
+collected before any files are deleted; choosing abort leaves existing files
+unchanged.
+
+Similar to [Checkpoint Conflicts](#checkpoint-conflicts), an existing topic or
+dataset output prompts you to choose:
+
+1. **Save this run under a new filename.** (default)
+2. **Clear and start fresh.** Delete only the selected topic or dataset output after all choices are confirmed.
+3. **Abort.** Stop the process and leave existing files unchanged.
+
+When saving under a new `filename.json`, DeepFabric tries `filename.json`, then
+`filename_1.json`, `filename_2.json`, and so on until an unused name is available.
+The exact name is chosen at save time, so a new clash during generation also gets
+a suffix. A validated `--retry-failed` run instead replaces the selected dataset
+after its updated export succeeds, with a terminal notice.
+
+Report and prompt-trace clashes are resolved automatically without a prompt.
+Clearing a topic or dataset output leaves existing reports and prompt traces
+unchanged; their new files receive numeric suffixes on collision. The terminal
+prints the actual filename where each file is saved.
 
 ## Output Validation
 

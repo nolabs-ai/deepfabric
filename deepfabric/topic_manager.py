@@ -1,6 +1,8 @@
 import asyncio
+import json
 import traceback
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .config import DeepFabricConfig
@@ -12,6 +14,7 @@ from .constants import (
 from .exceptions import ConfigurationError
 from .factory import create_topic_generator
 from .graph import Graph
+from .output_safety import save_output
 from .topic_model import TopicModel
 from .tree import Tree
 from .tui import get_graph_tui, get_tree_tui, get_tui
@@ -321,39 +324,38 @@ def save_topic_model(
     topic_model: TopicModel,
     config: DeepFabricConfig,
     topics_save_as: str | None = None,
-) -> None:
-    """
-    Save topic model to file.
-
-    Args:
-        topic_model: TopicModel to save (Tree or Graph)
-        config: DeepFabricConfig object
-        topics_save_as: Override path for saving topics
-
-    Raises:
-        ConfigurationError: If saving fails
-    """
+    *,
+    replace: bool = False,
+) -> str:
+    """Safely save generated topics and sidecars, returning the actual topic path."""
     tui = get_tui()
+    is_tree = isinstance(topic_model, Tree)
+    default = "topic_tree.jsonl" if is_tree else "topic_graph.json"
+    destination = topics_save_as or config.topics.save_as or default
 
-    if isinstance(topic_model, Tree):
-        try:
-            tree_save_path = topics_save_as or config.topics.save_as or "topic_tree.jsonl"
-            topic_model.save(tree_save_path)
-            if getattr(topic_model, "failed_generations", None):
-                failed_path = tree_save_path.replace(".jsonl", "_failed.jsonl")
-                tui.warning(f"Failed generations saved to: {failed_path}")
-            tui.success(f"Topic tree saved to {tree_save_path}")
-            tui.info(f"Total paths: {len(topic_model.tree_paths)}")
-        except Exception as e:
-            raise ConfigurationError(f"Error saving topic tree: {str(e)}") from e
+    def write_topics(path):
+        with open(path, "w", encoding="utf-8") as stream:
+            if is_tree:
+                for topic_path in topic_model.tree_paths:
+                    stream.write(json.dumps({"path": topic_path}) + "\n")
+            else:
+                stream.write(topic_model.to_json())
 
-    elif isinstance(topic_model, Graph):
-        try:
-            graph_save_path = topics_save_as or config.topics.save_as or "topic_graph.json"
-            topic_model.save(graph_save_path)
-            if getattr(topic_model, "failed_generations", None):
-                failed_path = graph_save_path.replace(".json", "_failed.jsonl")
-                tui.warning(f"Failed generations saved to: {failed_path}")
-            tui.success(f"Topic graph saved to {graph_save_path}")
-        except Exception as e:
-            raise ConfigurationError(f"Error saving topic graph: {str(e)}") from e
+    try:
+        actual = save_output(destination, write_topics, replace=replace)
+        tui.success(f"Topic {'tree' if is_tree else 'graph'} saved to {actual}")
+        failures = getattr(topic_model, "failed_generations", None)
+        if failures:
+            sidecar = Path(actual).with_name(Path(actual).stem + "_failed.jsonl")
+
+            def write_failures(path):
+                with open(path, "w", encoding="utf-8") as stream:
+                    for failure in failures:
+                        stream.write(json.dumps({"failed_generation": failure}) + "\n")
+
+            failed_path = save_output(sidecar, write_failures)
+            tui.warning(f"Failed generations saved to: {failed_path}")
+    except OSError as error:
+        raise ConfigurationError(f"Error saving topics: {error}") from error
+    else:
+        return actual

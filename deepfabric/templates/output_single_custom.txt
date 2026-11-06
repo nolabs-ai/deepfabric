@@ -1,0 +1,1 @@
+Return one complete record as a single JSON object matching the supplied schema. Fill in all required fields accurately and completely.

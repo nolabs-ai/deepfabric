@@ -11,7 +11,9 @@ nav:
     - Basic Datasets: dataset-generation/basic.md
     - Reasoning Datasets: dataset-generation/reasoning.md
     - Agent Datasets: dataset-generation/agent.md
+    - Sample Generation Modes: dataset-generation/sampling-modes.md
     - Configuration: dataset-generation/configuration.md
+    - Prompt Templates: dataset-generation/prompt-templates.md
     - Rate Limiting: dataset-generation/rate-limiting.md
   - Tools:
     - tools/index.md
@@ -125,10 +127,15 @@ plugins:
           options:
             docstring_style: google
 
+extra_css:
+  - assets/stylesheets/table-columns.css
+
+extra_javascript:
+  - assets/javascripts/table-columns.js
+
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/nolabs-ai/deepfabric
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/deepfabric/
-

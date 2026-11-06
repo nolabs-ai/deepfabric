@@ -6,6 +6,7 @@ import os
 import traceback
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from .config import DeepFabricConfig
 from .config_manager import DEFAULT_MODEL
 from .exceptions import ConfigurationError
 from .generator import DataSetGenerator
+from .output_safety import save_output
 from .progress import ProgressReporter
 from .tui import STREAM_PANEL_WIDTH, get_dataset_tui, get_tui
 from .utils import ensure_not_running_loop
@@ -117,31 +119,37 @@ async def handle_dataset_events_async(
         async for event in generator:
             if isinstance(event, dict) and "event" in event:
                 if event["event"] == "generation_start":
+                    tui.set_large_prompt_topics(0)
                     settings = _get_tui_settings()
-                    # Handle both cycle-based and step-based event formats
-                    # Cycle-based: unique_topics, cycles_needed, concurrency
-                    # Step-based: num_steps, batch_size
-                    is_cycle_based = "cycles_needed" in event
-                    if is_cycle_based:
-                        display_steps = event.get("cycles_needed", 1)
-                        display_batch_size = event.get("concurrency", 1)
-                    else:
-                        display_steps = event.get("num_steps", 1)
-                        display_batch_size = event.get("batch_size", 1)
+                    is_topic_based = event.get("generation_mode") == "topic_allocation"
+                    display_batch_size = event.get(
+                        "concurrency" if is_topic_based else "batch_size", 1
+                    )
+                    display_steps = (
+                        (event.get("selected_topics", 0) + display_batch_size - 1)
+                        // display_batch_size
+                        if is_topic_based
+                        else event.get("num_steps", 1)
+                    )
                     # Build header and params panels for layout
                     header_panel, params_panel = tui.build_generation_panels(
                         event["model_name"],
                         display_steps,
                         display_batch_size,
                         total_samples=event["total_samples"],
-                        is_cycle_based=is_cycle_based,
+                        is_topic_based=is_topic_based,
                         unique_topics=event.get("unique_topics", 0),
-                        final_cycle_size=event.get("final_cycle_size", 0),
+                        selected_topics=event.get("selected_topics", 0),
+                        base_quota=event.get("base_quota", 0),
+                        remainder=event.get("remainder", 0),
                         checkpoint_interval=event.get("checkpoint_interval", 0),
                     )
                     # Capture context for the run
                     tui.root_topic_prompt = event.get("root_topic_prompt")
                     tui.topic_model_type = event.get("topic_model_type")
+                    tui.set_checkpoint_resume_status(
+                        event.get("resumed_samples", 0), event.get("resumed_failures", 0)
+                    )
 
                     if settings.mode == "rich":
                         # Initialize status tracking
@@ -149,7 +157,7 @@ async def handle_dataset_events_async(
                             total_steps=display_steps,
                             total_samples=event["total_samples"],
                             checkpoint_enabled=event.get("checkpoint_enabled", False),
-                            is_cycle_based=is_cycle_based,
+                            is_topic_based=is_topic_based,
                         )
 
                         # Build layout with footer card
@@ -180,7 +188,9 @@ async def handle_dataset_events_async(
                         layout["main"].split_row(left, right)
 
                         prog_total = event["total_samples"]
-                        resumed_samples = event.get("resumed_samples", 0)
+                        resumed_samples = event.get("resumed_samples", 0) + event.get(
+                            "resumed_failures", 0
+                        )
 
                         # Footer run status
                         footer_prog = tui.tui.create_footer(layout, title="Run Status")
@@ -207,14 +217,16 @@ async def handle_dataset_events_async(
                             )
                     else:
                         prog_total = event["total_samples"]
-                        resumed_samples = event.get("resumed_samples", 0)
+                        resumed_samples = event.get("resumed_samples", 0) + event.get(
+                            "resumed_failures", 0
+                        )
 
                         # Simple/headless mode: runtime summary then progress bar
                         tui.console.print("\n[bold cyan]Dataset Generation[/bold cyan]")
                         model_line = f"Model: {event['model_name']}"
                         if event.get("topic_model_type"):
                             topic_type = event["topic_model_type"]
-                            if is_cycle_based and event.get("unique_topics"):
+                            if is_topic_based and event.get("unique_topics"):
                                 model_line += (
                                     f" ({topic_type}, {event['unique_topics']} unique topics)"
                                 )
@@ -222,7 +234,7 @@ async def handle_dataset_events_async(
                                 model_line += f" ({topic_type})"
                         tui.info(model_line)
 
-                        if is_cycle_based:
+                        if is_topic_based:
                             output_line = (
                                 f"Output: num_samples={prog_total}, "
                                 f"concurrency={display_batch_size}"
@@ -233,16 +245,12 @@ async def handle_dataset_events_async(
                             )
                         tui.info(output_line)
 
-                        if is_cycle_based:
-                            cycles = event.get("cycles_needed", 1)
-                            unique = event.get("unique_topics", 0)
+                        if is_topic_based:
                             tui.info(
-                                f"  → Cycles needed: {cycles} "
-                                f"({prog_total} samples ÷ {unique} unique topics)"
+                                f"  → One pass: {event.get('selected_topics', 0)}/{event.get('unique_topics', 0)} topics; "
+                                f"base quota {event.get('base_quota', 0)}, "
+                                f"{event.get('remainder', 0)} topics receive one extra sample"
                             )
-                            final_cycle = event.get("final_cycle_size", 0)
-                            if final_cycle and unique and final_cycle < unique:
-                                tui.info(f"  → Final cycle: {final_cycle} topics (partial)")
 
                         tui.console.print()
                         cp_interval = event.get("checkpoint_interval")
@@ -291,7 +299,23 @@ async def handle_dataset_events_async(
                             headless_batch_size = display_batch_size
                             headless_last_printed = resumed_samples
                             checkpoint_interval = event.get("checkpoint_interval") or 0
-                elif event["event"] == "step_complete":
+                elif event["event"] == "sequential_prompt_warning":
+                    tui.set_large_prompt_topics(event["affected_topics"])
+                    if event.get("message"):
+                        tui.log_event(event["message"])
+                    if simple_progress is not None and simple_progress_task is not None:
+                        simple_progress.update(
+                            simple_progress_task,
+                            description=(
+                                f"Generating • Large prompts: {event['affected_topics']} "
+                                f"{'topic' if event['affected_topics'] == 1 else 'topics'} "
+                                f"({event['warnings_suppressed']} "
+                                f"{'warning' if event['warnings_suppressed'] == 1 else 'warnings'} suppressed)"
+                            ),
+                        )
+                elif event["event"] == "step_complete" and not event.get(
+                    "progress_reported", False
+                ):
                     samples_generated = event.get("samples_generated", 0)
                     if footer_prog and task is not None:
                         if samples_generated > 0:
@@ -325,53 +349,35 @@ async def handle_dataset_events_async(
                     total = int(event.get("total_steps", 0))
                     tui.status_step_start(step, total)
 
-                elif event["event"] == "cycle_start":
-                    # Cycle-based generation: keep status panel in sync
-                    cycle = int(event.get("cycle", 0))
-                    total_cycles = int(event.get("total_cycles", 0))
-                    tui.status_step_start(cycle, total_cycles)
+                elif event["event"] == "topic_group_start":
+                    tui.status_step_start(event["group"], event["total_groups"])
 
                 elif event["event"] == "batch_complete":
-                    # Per-batch progress: advance bars after each concurrency batch
+                    # Per-slot progress counts both successes and terminal failures
                     batch_generated = event.get("samples_generated", 0)
                     batch_failed = event.get("samples_failed", 0)
+                    batch_processed = batch_generated + batch_failed
                     if footer_prog and task is not None:
-                        if batch_generated > 0:
+                        if batch_processed > 0:
                             with contextlib.suppress(Exception):
-                                footer_prog.update(task, advance=batch_generated)
+                                footer_prog.update(task, advance=batch_processed)
                             tui.status_step_complete(batch_generated, batch_failed)
                     elif simple_progress is not None and simple_progress_task is not None:
                         with contextlib.suppress(Exception):
-                            simple_progress.update(simple_progress_task, advance=batch_generated)
-                        if simple_checkpoint_task is not None and batch_generated > 0:
+                            simple_progress.update(simple_progress_task, advance=batch_processed)
+                        if simple_checkpoint_task is not None and batch_processed > 0:
                             with contextlib.suppress(Exception):
                                 simple_progress.update(
-                                    simple_checkpoint_task, advance=batch_generated
+                                    simple_checkpoint_task, advance=batch_processed
                                 )
-                    elif headless_total > 0 and batch_generated > 0:
-                        headless_completed += batch_generated
+                    elif headless_total > 0 and batch_processed > 0:
+                        headless_completed += batch_processed
                         if (
                             headless_completed - headless_last_printed >= headless_batch_size
                             or headless_completed >= headless_total
                         ):
-                            tui.info(f"Generated {headless_completed}/{headless_total} samples")
+                            tui.info(f"Processed {headless_completed}/{headless_total} samples")
                             headless_last_printed = headless_completed
-
-                elif event["event"] == "cycle_complete":
-                    # Cycle-based generation: log cycle summary (progress already advanced by batch_complete)
-                    samples_in_cycle = event.get("samples_in_cycle", 0)
-                    failures_in_cycle = event.get("failures_in_cycle", 0)
-                    if footer_prog and task is not None:
-                        tui.log_event(
-                            f"✓ Cycle {event.get('cycle')}: "
-                            f"+{samples_in_cycle} samples"
-                            + (f" (-{failures_in_cycle} failed)" if failures_in_cycle else "")
-                        )
-                    elif headless_total > 0:
-                        msg = f"Cycle {event.get('cycle')}: +{samples_in_cycle} samples"
-                        if failures_in_cycle:
-                            msg += f" (-{failures_in_cycle} failed)"
-                        tui.info(msg)
 
                 elif event["event"] == "checkpoint_saved":
                     # Display checkpoint save notification
@@ -398,6 +404,13 @@ async def handle_dataset_events_async(
                         else:
                             tui.info(f"Checkpoint: {total_samples} samples saved")
 
+                elif event["event"] in ("generation_interrupted", "generation_error"):
+                    # Stop alternate-screen rendering before the generator logs its summary.
+                    if live:
+                        live.stop()
+                    if simple_progress is not None:
+                        simple_progress.stop()
+                        tui.simple_progress = None
                 elif event["event"] == "generation_stopped":
                     # Graceful stop at checkpoint
                     if live:
@@ -470,6 +483,14 @@ async def handle_dataset_events_async(
             get_tui().error(f"🔍 Debug: Full traceback:\n{traceback.format_exc()}")
         get_tui().error(f"Dataset generation failed: {str(e)}")
         raise
+    finally:
+        if live:
+            live.stop()
+        if simple_progress is not None:
+            simple_progress.stop()
+        tui.live_display = None
+        tui.live_layout = None
+        tui.simple_progress = None
 
     return final_result
 
@@ -546,7 +567,7 @@ async def create_dataset_async(
     raw_num_samples = num_samples if num_samples is not None else output_config["num_samples"]
     final_batch_size = batch_size or output_config["batch_size"]
 
-    # Use the same unique topics that drive cycle-based generation.
+    # Resolve counts from actual unique topics used by allocation.
     topic_count = len(topic_model.get_unique_topics())
     final_num_samples = resolve_num_samples(raw_num_samples, topic_count)
 
@@ -557,9 +578,6 @@ async def create_dataset_async(
 
     generation_params = config.get_generation_params(**(generation_overrides or {}))
     final_model = model or generation_params.get("model_name", DEFAULT_MODEL)
-
-    # Still compute num_steps for backward compat with the generator's step-based path
-    final_num_steps = math.ceil(final_num_samples / final_batch_size)
 
     # Create progress reporter and attach TUI as observer for streaming feedback
     progress_reporter = ProgressReporter()
@@ -572,7 +590,7 @@ async def create_dataset_async(
 
     try:
         generator = engine.create_data_with_events_async(
-            num_steps=final_num_steps,
+            num_samples=final_num_samples,
             batch_size=final_batch_size,
             topic_model=topic_model,
             model_name=final_model,
@@ -738,7 +756,7 @@ def _save_failed_samples(
     failed_samples: list,
     tui,
     use_path_directly: bool = False,
-) -> None:
+) -> str:
     """Save failed samples to a file.
 
     Args:
@@ -754,12 +772,12 @@ def _save_failed_samples(
         failures_path = save_path
     else:
         # Generate timestamped filename: my-dataset.jsonl -> my-dataset_failures_20231130_143022.jsonl
-        base_path = save_path.rsplit(".", 1)[0] if "." in save_path else save_path
+        base_path = str(Path(save_path).with_suffix(""))
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         failures_path = f"{base_path}_failures_{timestamp}.jsonl"
 
-    try:
-        with open(failures_path, "w") as f:
+    def write_failures(destination):
+        with open(destination, "w", encoding="utf-8") as f:
             for idx, failure in enumerate(failed_samples):
                 # Structure each failure as a JSON object with metadata
                 failure_record = {
@@ -775,9 +793,18 @@ def _save_failed_samples(
                     # Legacy format: plain string or other type
                     failure_record["error"] = str(failure)
                 f.write(json.dumps(failure_record) + "\n")
-        tui.warning(f"Failed samples saved to: {failures_path} ({len(failed_samples)} failures)")
-    except Exception as e:
-        tui.error(f"Could not save failed samples: {str(e)}")
+
+    actual = save_output(failures_path, write_failures)
+    tui.warning(f"Failed samples saved to: {actual} ({len(failed_samples)} failures)")
+    return actual
+
+
+@dataclass(frozen=True)
+class DatasetSaveResult:
+    """Actual export paths, including a renamed explicit failure destination."""
+
+    dataset_path: str
+    failures_path: str | None = None
 
 
 def save_dataset(
@@ -786,7 +813,9 @@ def save_dataset(
     config: DeepFabricConfig | None = None,
     engine: DataSetGenerator | None = None,
     failures_path: str | None = None,
-) -> None:
+    *,
+    replace: bool = False,
+) -> DatasetSaveResult:
     """
     Save dataset to file.
 
@@ -796,16 +825,23 @@ def save_dataset(
         config: Optional configuration for upload settings
         engine: Optional DataSetGenerator to save failed samples from
         failures_path: Optional explicit path for failures file (overrides auto-generated path)
+        replace: Replace the dataset only after successful serialization.
+
+    Returns:
+        Actual dataset and optional failure-export paths; collisions may add suffixes.
 
     Raises:
         ConfigurationError: If saving fails
     """
     tui = get_tui()
+    saved_failures_path = None
     try:
         # Save the dataset as JSONL, stripping null values injected by HF Dataset
         # HuggingFace Dataset's Arrow schema adds null for missing fields across rows,
         # but we want clean output without null values for optional fields
-        _save_jsonl_without_nulls(dataset, save_path)
+        save_path = save_output(
+            save_path, lambda path: _save_jsonl_without_nulls(dataset, path), replace=replace
+        )
         tui.success(f"Dataset saved to: {save_path}")
 
         # Save failed samples if engine has any (including flushed to checkpoint)
@@ -814,7 +850,7 @@ def save_dataset(
             if all_failures:
                 # Use explicit failures_path if provided, otherwise auto-generate from save_path
                 actual_failures_path = failures_path or save_path
-                _save_failed_samples(
+                saved_failures_path = _save_failed_samples(
                     actual_failures_path, all_failures, tui, use_path_directly=bool(failures_path)
                 )
 
@@ -830,3 +866,5 @@ def save_dataset(
 
     except Exception as e:
         raise ConfigurationError(f"Error saving dataset: {str(e)}") from e
+    else:
+        return DatasetSaveResult(save_path, saved_failures_path)

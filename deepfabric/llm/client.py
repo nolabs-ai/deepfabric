@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import Any
 
 import anthropic
@@ -15,14 +15,18 @@ from google import genai
 from google.genai import types as genai_types
 from pydantic import BaseModel
 
+from deepfabric.run_report import response_metrics
+
 from ..exceptions import DataSetGeneratorError
 from .errors import handle_provider_error
+from .prompt_trace import PromptPreviewCaptured, get_prompt_trace
 from .rate_limit_config import (
     RateLimitConfig,
     create_rate_limit_config,
     get_default_rate_limit_config,
 )
 from .retry_handler import RetryHandler, retry_with_backoff, retry_with_backoff_async
+from .token_usage import TokenUsageTracker, record_usage, request_token_usage
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +46,11 @@ _PROVIDER_PARAM_MAPPINGS: dict[str, dict[str, str]] = {
 
 
 class LLMClient:
-    """Wrapper for Outlines models with retry logic and error handling."""
+    """Structured generation with retries and provider-reported usage.
+
+    ``token_usage.snapshot()`` returns cumulative counts for this client,
+    including observed failed attempts and missing-metadata coverage.
+    """
 
     def __init__(
         self,
@@ -59,6 +67,7 @@ class LLMClient:
             rate_limit_config: Rate limiting configuration (None uses provider defaults)
             **kwargs: Additional client configuration
         """
+        self.token_usage = TokenUsageTracker()
         self.provider = provider
         self.model_name = model_name
         self._client_kwargs = kwargs  # Store for lazy async model initialization
@@ -73,11 +82,13 @@ class LLMClient:
 
         self.retry_handler = RetryHandler(self.rate_limit_config, provider)
 
-        self.model: Any = make_outlines_model(provider, model_name, **kwargs)
+        session = get_prompt_trace()
+        preview = session is not None and session.dry_run
+        self.model: Any = None if preview else make_outlines_model(provider, model_name, **kwargs)
         # Lazy-initialize async_model only when needed
         self._async_model: Any | None = None
         self._async_model_initialized: bool = False
-        if self.model is None:
+        if self.model is None and not preview:
             msg = f"Failed to create model for {provider}/{model_name}"
             raise DataSetGeneratorError(msg)
 
@@ -114,10 +125,20 @@ class LLMClient:
             The max_retries parameter is deprecated. Use rate_limit_config in __init__ instead.
             If provided, it will be ignored in favor of the configured retry handler.
         """
+        if (session := get_prompt_trace()) is not None and session.dry_run:
+            self._trace_prompt(prompt, schema)
         return self._generate_with_retry(prompt, schema, **kwargs)
 
     # Providers that only support async generation (native API, not Outlines)
     _ASYNC_ONLY_PROVIDERS = frozenset({"anthropic", "gemini"})
+
+    def _trace_prompt(self, prompt: Any, schema: Any) -> None:
+        """Record an explicitly enabled trace, stopping previews before any model call."""
+        session = get_prompt_trace()
+        if session is not None:
+            session.record(self.provider, self.model_name, prompt, schema)
+            if session.dry_run:
+                raise PromptPreviewCaptured
 
     @retry_with_backoff
     def _generate_with_retry(self, prompt: str, schema: Any, **kwargs) -> Any:
@@ -147,7 +168,9 @@ class LLMClient:
             generation_schema = _create_openai_compatible_schema(schema)
 
         # Generate JSON string using the model
-        json_output = self.model(prompt, generation_schema, **kwargs)
+        self._trace_prompt(prompt, schema)
+        with request_token_usage(self.token_usage, self.provider, self.model_name, schema, kwargs):
+            json_output = self.model(prompt, generation_schema, **kwargs)
 
         # Parse and validate the JSON response with the ORIGINAL schema
         # This ensures we still get proper validation
@@ -178,6 +201,8 @@ class LLMClient:
             The max_retries parameter is deprecated. Use rate_limit_config in __init__ instead.
             If provided, it will be ignored in favor of the configured retry handler.
         """
+        if (session := get_prompt_trace()) is not None and session.dry_run:
+            self._trace_prompt(prompt, schema)
         if self.async_model is None:
             # Fallback to running the synchronous path in a worker thread
             return await asyncio.to_thread(self.generate, prompt, schema, **kwargs)
@@ -213,7 +238,9 @@ class LLMClient:
             return await asyncio.to_thread(self.generate, prompt, schema, **kwargs)
 
         # Call the async model (guaranteed non-None by check above)
-        json_output = await async_model(prompt, generation_schema, **kwargs)
+        self._trace_prompt(prompt, schema)
+        with request_token_usage(self.token_usage, self.provider, self.model_name, schema, kwargs):
+            json_output = await async_model(prompt, generation_schema, **kwargs)
 
         # Validate with original schema to ensure proper validation
         try:
@@ -418,6 +445,14 @@ class GeminiModel:
             config=config,
         )
 
+        record_usage("gemini", self.model_name, getattr(response, "usage_metadata", None))
+        candidates = getattr(response, "candidates", None)
+        response_metrics(
+            "gemini",
+            self.model_name,
+            getattr(candidates[0], "finish_reason", None) if candidates else None,
+        )
+
         # Safely check for empty or blocked responses
         # Some SDK versions may return None or have blocked candidates
         if not response.candidates:
@@ -501,6 +536,9 @@ class AnthropicModel:
                 f"Anthropic structured output request failed: {e}",
                 context={"schema": prepared_schema},
             ) from e
+
+        record_usage("anthropic", self.model_name, getattr(response, "usage", None))
+        response_metrics("anthropic", self.model_name, getattr(response, "stop_reason", None))
 
         # Check for refusals
         if response.stop_reason == "refusal":
@@ -1101,6 +1139,45 @@ def _create_openai_compatible_schema(schema: type[BaseModel]) -> type[BaseModel]
     return _get_cached_openai_schema(schema)
 
 
+def _observe_openai_usage(client: Any, provider: str, model: str, *, asynchronous: bool) -> None:
+    """Retain SDK response metadata before Outlines extracts generated text."""
+    original = client.chat.completions.create
+    if asynchronous:
+
+        @wraps(original)
+        async def create_async(*args, **kwargs):
+            try:
+                response = await original(*args, **kwargs)
+            except Exception:
+                record_usage(provider, model, None, response_received=False)
+                raise
+            record_usage(provider, model, getattr(response, "usage", None))
+            choices = getattr(response, "choices", None)
+            response_metrics(
+                provider, model, getattr(choices[0], "finish_reason", None) if choices else None
+            )
+            return response
+
+        client.chat.completions.create = create_async
+    else:
+
+        @wraps(original)
+        def create_sync(*args, **kwargs):
+            try:
+                response = original(*args, **kwargs)
+            except Exception:
+                record_usage(provider, model, None, response_received=False)
+                raise
+            record_usage(provider, model, getattr(response, "usage", None))
+            choices = getattr(response, "choices", None)
+            response_metrics(
+                provider, model, getattr(choices[0], "finish_reason", None) if choices else None
+            )
+            return response
+
+        client.chat.completions.create = create_sync
+
+
 def make_outlines_model(provider: str, model_name: str, **kwargs) -> Any:
     """Create an Outlines model for the specified provider and model.
 
@@ -1122,6 +1199,7 @@ def make_outlines_model(provider: str, model_name: str, **kwargs) -> Any:
                 default_base_url=None,  # Use OpenAI's default
                 **kwargs,
             )
+            _observe_openai_usage(client, provider, model_name, asynchronous=False)
             return outlines.from_openai(client, model_name)
 
         if provider == "ollama":
@@ -1131,6 +1209,7 @@ def make_outlines_model(provider: str, model_name: str, **kwargs) -> Any:
                 dummy_key="ollama",
                 **kwargs,
             )
+            _observe_openai_usage(client, provider, model_name, asynchronous=False)
             return outlines.from_openai(client, model_name)
 
         if provider == "openrouter":
@@ -1139,6 +1218,7 @@ def make_outlines_model(provider: str, model_name: str, **kwargs) -> Any:
                 default_base_url="https://openrouter.ai/api/v1",
                 **kwargs,
             )
+            _observe_openai_usage(client, provider, model_name, asynchronous=False)
             return outlines.from_openai(client, model_name)
 
         if provider == "anthropic":
@@ -1178,6 +1258,7 @@ def make_async_outlines_model(provider: str, model_name: str, **kwargs) -> Any |
                 default_base_url=None,  # Use OpenAI's default
                 **kwargs,
             )
+            _observe_openai_usage(client, provider, model_name, asynchronous=True)
             return outlines.from_openai(client, model_name)
 
         if provider == "ollama":
@@ -1187,6 +1268,7 @@ def make_async_outlines_model(provider: str, model_name: str, **kwargs) -> Any |
                 dummy_key="ollama",
                 **kwargs,
             )
+            _observe_openai_usage(client, provider, model_name, asynchronous=True)
             return outlines.from_openai(client, model_name)
 
         if provider == "openrouter":
@@ -1195,6 +1277,7 @@ def make_async_outlines_model(provider: str, model_name: str, **kwargs) -> Any |
                 default_base_url="https://openrouter.ai/api/v1",
                 **kwargs,
             )
+            _observe_openai_usage(client, provider, model_name, asynchronous=True)
             return outlines.from_openai(client, model_name)
 
         if provider == "anthropic":

@@ -1,0 +1,11 @@
+Generate ${num_subtopics} subtopics for training data organization.
+
+Task: Create diverse but related subtopics that expand on the given topic path.
+
+Examples:
+${examples}
+
+Context: ${system_prompt}
+
+Topic path: ${path_str}
+Generate ${num_subtopics} subtopics as a Python list. Return only the list, nothing else.

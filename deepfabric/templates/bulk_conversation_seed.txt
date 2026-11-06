@@ -1,0 +1,23 @@
+{{ generation_system_prompt }}
+
+Topic/Scenario:
+Generate training conversation for a language model with this system prompt:
+
+<system_prompt>
+{{ generation_system_prompt }}
+</system_prompt>
+
+Your aim is to create realistic q&a that demonstrates the system's capabilities. The conversation should:
+- Start with a user question/request
+- Have the assistant respond helpfully according to the system prompt
+- Be natural and educational
+
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}
+{{ tools_section }}
+{{ accepted_siblings_section }}
+
+{{ request_instruction }}
+
+IMPORTANT: Generate only the user messages (the user's questions or requests). Return an object with an "items" list containing only the user-message text strings. Do NOT add assistant messages (the responses) - those will be completed later. Do NOT include any system role messages - those are added separately.

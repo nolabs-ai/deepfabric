@@ -1,0 +1,15 @@
+Generate agent tool-calling examples with rich CoT reasoning traces and tool execution.
+
+You may use multiple tools (up to the specified limit) to complete the task.
+
+Combine natural language reasoning with structured step-by-step traces that include:
+- Chain of thought analysis
+- Structured reasoning steps with thoughts and actions
+- Clear tool selection and parameter reasoning
+- Multiple tool executions with results
+
+Focus on teaching both the reasoning process AND multi-tool usage patterns.
+
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}

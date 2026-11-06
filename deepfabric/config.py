@@ -1,5 +1,6 @@
 import warnings
 
+from pathlib import Path
 from typing import Literal
 
 import yaml
@@ -21,6 +22,8 @@ from .constants import (
 )
 from .exceptions import ConfigurationError
 from .metrics import trace
+from .prompt_templates import TopicPromptTemplates
+from .topic_sampling import TopicSamplingConfig, warn_duplicate_prompt
 from .utils import parse_num_samples
 
 
@@ -82,6 +85,8 @@ class LLMConfig(BaseModel):
 
 class TopicsConfig(BaseModel):
     """Configuration for topic generation (tree or graph mode)."""
+
+    prompt_templates: TopicPromptTemplates = Field(default_factory=TopicPromptTemplates)
 
     prompt: str = Field(
         ..., min_length=1, description="The initial prompt to start topic generation"
@@ -230,7 +235,7 @@ class ToolsConfig(BaseModel):
     )
 
 
-class GenerationConfig(BaseModel):
+class GenerationConfig(TopicSamplingConfig):
     """Configuration for sample/conversation generation."""
 
     system_prompt: str = Field(
@@ -256,7 +261,11 @@ class GenerationConfig(BaseModel):
         le=5,
         description="Retries for individual sample validation failures",
     )
-    max_tokens: int = Field(default=2000, ge=1, description="Maximum tokens to generate per call")
+    max_tokens: int = Field(
+        default=2000,
+        ge=1,
+        description="Base generation allowance; bulk collections scale by requested item count",
+    )
     rate_limit: dict[str, int | float | str | bool] | None = Field(
         default=None,
         description="Rate limiting and retry configuration",
@@ -276,6 +285,11 @@ class GenerationConfig(BaseModel):
     llm: LLMConfig | None = Field(
         default=None, description="Optional LLM configuration overrides for generation"
     )
+
+    @model_validator(mode="after")
+    def validate_sample_mode(self):
+        self.validate_topic_sampling(self.output_schema, has_tools=self.tools is not None)
+        return self
 
 
 class CheckpointConfig(BaseModel):
@@ -319,7 +333,7 @@ class OutputConfig(BaseModel):
     batch_size: int = Field(
         default=ENGINE_DEFAULT_BATCH_SIZE,
         ge=1,
-        description="Number of samples to process at a time",
+        description="Maximum concurrent topic tasks (sample batch size without a topic model)",
     )
     save_as: str = Field(..., min_length=1, description="Where to save the final dataset")
 
@@ -490,6 +504,14 @@ class DeepFabricConfig(BaseModel):
         None, description="DeepFabric Cloud configuration"
     )
 
+    @model_validator(mode="after")
+    def warn_duplicate_generation_prompt(self):
+        warn_duplicate_prompt(
+            self.output.system_prompt or self.generation.system_prompt,
+            self.generation.instructions,
+        )
+        return self
+
     @classmethod
     def _detect_old_format(cls, config_dict: dict) -> bool:
         """Detect if config uses old format."""
@@ -547,7 +569,9 @@ See documentation for full examples.
             raise ConfigurationError(cls._get_migration_message())
 
         try:
-            config = cls(**config_dict)
+            config = cls.model_validate(
+                config_dict, context={"config_dir": Path(yaml_path).resolve().parent}
+            )
             trace(
                 "config_loaded",
                 {
@@ -614,6 +638,7 @@ See documentation for full examples.
             "max_concurrent": self.topics.max_concurrent,
             "max_tokens": self.topics.max_tokens,
             "prompt_style": self.topics.prompt_style,
+            "prompt_templates": self.topics.prompt_templates,
         }
 
         # Handle overrides
@@ -660,6 +685,15 @@ See documentation for full examples.
             if self.output.checkpoint
             else False,
         }
+
+        params["topic_sample_mode"] = self.generation.topic_sample_mode
+        params["bulk"] = self.generation.bulk
+        params["seed_field"] = self.generation.seed_field
+        params["prompt_templates"] = self.generation.prompt_templates
+        params["prompt_template"] = self.generation.prompt_template
+        for name in ("shared_scope", "completion_includes_topic_path"):
+            if name in self.generation.model_fields_set:
+                params[name] = getattr(self.generation, name)
 
         # Tool config
         if self.generation.tools:

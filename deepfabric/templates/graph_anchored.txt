@@ -1,0 +1,16 @@
+Generate ${num_subtopics} subtopics for training data organization.
+
+Task: Create diverse but related subtopics that expand on the given topic path.
+
+Examples:
+${examples}
+
+Context: ${system_prompt}
+
+Topic path: ${path_str}
+
+Generate ${num_subtopics} subtopics. For each subtopic, provide:
+1. A "topic" string - a specific, concrete subtopic directly related to the parent
+2. A "connections" list - ALWAYS use an empty list []
+
+Return focused subtopics that stay on-topic with the path above.
