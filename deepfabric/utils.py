@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .constants import (
+    CHECKPOINT_FAILURES_SUFFIX,
+    CHECKPOINT_METADATA_SUFFIX,
+    CHECKPOINT_SAMPLES_SUFFIX,
+)
+
 VALIDATION_ERROR_INDICATORS = [
     "validation error",
     "value error",
@@ -382,3 +388,30 @@ def get_checkpoint_dir(config_path: str | None = None) -> str:
     path_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:12]
 
     return str(base_dir / path_hash)
+
+
+def build_checkpoint_file_paths(
+    output_save_as: str,
+    checkpoint_dir: str | None = None,
+    *,
+    config_path: str | None = None,
+) -> tuple[Path, Path, Path]:
+    """Build metadata, samples, and failures paths without creating directories.
+
+    The caller selects the effective directory (for the CLI, its option overrides
+    the configured directory). A nonempty checkpoint_dir is used even if it does
+    not exist. Only None or an empty string selects get_checkpoint_dir(config_path).
+    This function does not check existence or read checkpoint contents.
+
+    Args:
+        output_save_as: Configured output filename, which determines the checkpoint stem.
+        checkpoint_dir: Effective directory after caller-specific option precedence.
+        config_path: Source path for automatic directory hashing; None uses the default.
+    """
+    directory = Path(checkpoint_dir or get_checkpoint_dir(config_path))
+    stem = Path(output_save_as).stem
+    return (
+        directory / f"{stem}{CHECKPOINT_METADATA_SUFFIX}",
+        directory / f"{stem}{CHECKPOINT_SAMPLES_SUFFIX}",
+        directory / f"{stem}{CHECKPOINT_FAILURES_SUFFIX}",
+    )

@@ -19,9 +19,6 @@ from .checkpoint import iter_jsonl, read_jsonl, validate_checkpoint, version_err
 from .config import _normalize_reasoning_style
 from .constants import (
     API_ERROR_INDICATORS,
-    CHECKPOINT_FAILURES_SUFFIX,
-    CHECKPOINT_METADATA_SUFFIX,
-    CHECKPOINT_SAMPLES_SUFFIX,
     CHECKPOINT_VERSION,
     DEFAULT_MAX_RETRIES,
     DEFAULT_REQUEST_TIMEOUT,
@@ -52,7 +49,7 @@ from .schemas import Conversation, ToolRegistry, get_conversation_schema
 from .tools import BUILTIN_TOOL_REGISTRY
 from .tools.loader import load_tools_from_dict, load_tools_from_endpoint
 from .topic_model import TopicModel, TopicPath
-from .utils import ensure_not_running_loop, get_checkpoint_dir, is_validation_error
+from .utils import build_checkpoint_file_paths, ensure_not_running_loop, is_validation_error
 
 # Handle circular import for type hints
 if TYPE_CHECKING:
@@ -378,18 +375,9 @@ class DataSetGenerator:
                 "Cannot create checkpoint paths: output_save_as not configured"
             )
 
-        # Create checkpoint directory if needed
-        # Use XDG-compliant fallback if checkpoint_path not resolved by CLI
-        checkpoint_dir = Path(self.config.checkpoint_path or get_checkpoint_dir(config_path=None))
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        # Derive checkpoint filenames from output filename
-        output_stem = Path(self.config.output_save_as).stem
-        metadata_path = checkpoint_dir / f"{output_stem}{CHECKPOINT_METADATA_SUFFIX}"
-        samples_path = checkpoint_dir / f"{output_stem}{CHECKPOINT_SAMPLES_SUFFIX}"
-        failures_path = checkpoint_dir / f"{output_stem}{CHECKPOINT_FAILURES_SUFFIX}"
-
-        return metadata_path, samples_path, failures_path
+        paths = build_checkpoint_file_paths(self.config.output_save_as, self.config.checkpoint_path)
+        paths[0].parent.mkdir(parents=True, exist_ok=True)
+        return paths
 
     def _initialize_checkpoint_paths(self) -> None:
         """Initialize checkpoint file paths if checkpointing is enabled."""

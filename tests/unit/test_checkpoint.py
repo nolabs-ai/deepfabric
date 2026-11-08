@@ -23,6 +23,7 @@ from deepfabric.constants import (
 from deepfabric.exceptions import DataSetGeneratorError
 from deepfabric.generator import DataSetGenerator, DataSetGeneratorConfig
 from deepfabric.sampling import topic_plan
+from deepfabric.utils import build_checkpoint_file_paths
 
 
 @pytest.fixture
@@ -97,6 +98,49 @@ class TestCheckpointConfig:
 
 class TestCheckpointPaths:
     """Tests for checkpoint path generation."""
+
+    @pytest.mark.parametrize("config_path", [None, "original-config.yaml"])
+    def test_resolver_automatic_directory_without_creating_it(self, tmp_path, config_path):
+        with patch("deepfabric.utils._get_deepfabric_data_dir", return_value=tmp_path):
+            paths = build_checkpoint_file_paths("outputs/dataset.jsonl", config_path=config_path)
+            repeated = build_checkpoint_file_paths(
+                "elsewhere/dataset.jsonl", config_path=config_path
+            )
+            other = build_checkpoint_file_paths("dataset.jsonl", config_path="other-config.yaml")
+
+        assert paths == repeated
+        assert paths[0].parent != other[0].parent
+        assert paths[0].name == f"dataset{CHECKPOINT_METADATA_SUFFIX}"
+        assert not paths[0].parent.exists()
+        if config_path is None:
+            assert paths[0].parent == tmp_path / "checkpoints" / "default"
+
+    def test_resolver_explicit_directory_without_creating_it(self, tmp_path):
+        directory = tmp_path / "explicit"
+        with patch("deepfabric.utils.get_checkpoint_dir") as automatic_directory:
+            paths = build_checkpoint_file_paths(
+                "outputs/dataset.jsonl", str(directory), config_path="config.yaml"
+            )
+
+        automatic_directory.assert_not_called()
+        assert paths == (
+            directory / f"dataset{CHECKPOINT_METADATA_SUFFIX}",
+            directory / f"dataset{CHECKPOINT_SAMPLES_SUFFIX}",
+            directory / f"dataset{CHECKPOINT_FAILURES_SUFFIX}",
+        )
+        assert not directory.exists()
+
+    def test_generator_uses_default_directory(self, tmp_path, base_generator_params):
+        params = {**base_generator_params, "checkpoint_path": None}
+        with (
+            patch("deepfabric.utils._get_deepfabric_data_dir", return_value=tmp_path),
+            patch("deepfabric.generator.LLMClient"),
+        ):
+            generator = DataSetGenerator(**params)
+            paths = generator._get_checkpoint_paths()
+
+        assert paths[0].parent == tmp_path / "checkpoints" / "default"
+        assert paths[0].parent.is_dir()
 
     def test_get_checkpoint_paths(self, temp_checkpoint_dir, base_generator_params):
         """Test that checkpoint paths are correctly derived from output_save_as."""

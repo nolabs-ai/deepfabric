@@ -25,12 +25,7 @@ from .auth import auth as auth_group
 from .checkpoint import version_error
 from .config import DeepFabricConfig
 from .config_manager import apply_cli_overrides, get_final_parameters, load_config
-from .constants import (
-    CHECKPOINT_FAILURES_SUFFIX,
-    CHECKPOINT_METADATA_SUFFIX,
-    CHECKPOINT_SAMPLES_SUFFIX,
-    CHECKPOINT_VERSION,
-)
+from .constants import CHECKPOINT_VERSION
 from .dataset_manager import create_dataset, save_dataset
 from .exceptions import ConfigurationError
 from .generator import DataSetGenerator
@@ -42,6 +37,7 @@ from .topic_model import TopicModel
 from .tui import configure_tui, get_dataset_tui, get_tui
 from .update_checker import check_for_updates
 from .utils import (
+    build_checkpoint_file_paths,
     check_dir_writable,
     check_path_writable,
     get_bool_env,
@@ -83,9 +79,7 @@ def _get_checkpoint_topics_path(
     Returns:
         Topics file path from checkpoint metadata, or None if not available
     """
-    checkpoint_path = Path(checkpoint_dir)
-    output_stem = Path(output_save_as).stem
-    metadata_path = checkpoint_path / f"{output_stem}{CHECKPOINT_METADATA_SUFFIX}"
+    metadata_path, _, _ = build_checkpoint_file_paths(output_save_as, checkpoint_dir)
 
     if not metadata_path.exists():
         return None
@@ -840,18 +834,18 @@ def generate(  # noqa: PLR0913
 
         preparation = _load_and_prepare_generation_context(options, skip_path_validation=topic_only)
 
-        # Compute checkpoint directory once for consistent use throughout generation
-        # Precedence: --checkpoint-path, then output.checkpoint.path, then a directory
-        # hashed from the config file (or output path for config-less runs)
+        # Apply CLI-over-config directory precedence here. The shared file-path
+        # builder supplies the automatic directory only when neither is set.
         path_source = (
             options.config_file or options.output_save_as or preparation.config.output.save_as
         )
         checkpoint_config = preparation.config.output.checkpoint
-        checkpoint_dir = (
-            options.checkpoint_path
-            or (checkpoint_config.path if checkpoint_config else None)
-            or get_checkpoint_dir(path_source)
+        checkpoint_paths = build_checkpoint_file_paths(
+            preparation.config.output.save_as,
+            options.checkpoint_path or (checkpoint_config.path if checkpoint_config else None),
+            config_path=path_source,
         )
+        checkpoint_dir = str(checkpoint_paths[0].parent)
 
         # Auto-infer topics-load when resuming from checkpoint
         if options.resume and not options.topics_load:
@@ -1955,19 +1949,15 @@ def checkpoint_status(config_file: str) -> None:
     # Get checkpoint configuration
     checkpoint_config = config.get_checkpoint_config()
     output_config = config.get_output_config()
-    checkpoint_dir = checkpoint_config.get("path") or get_checkpoint_dir(config_file)
     save_as = output_config.get("save_as")
 
     if not save_as:
         tui.error("Config does not specify output.save_as - cannot determine checkpoint paths")
         sys.exit(1)
 
-    # Derive checkpoint paths
-    output_stem = Path(save_as).stem
-    checkpoint_dir_path = Path(checkpoint_dir)
-    metadata_path = checkpoint_dir_path / f"{output_stem}{CHECKPOINT_METADATA_SUFFIX}"
-    samples_path = checkpoint_dir_path / f"{output_stem}{CHECKPOINT_SAMPLES_SUFFIX}"
-    failures_path = checkpoint_dir_path / f"{output_stem}{CHECKPOINT_FAILURES_SUFFIX}"
+    metadata_path, samples_path, failures_path = build_checkpoint_file_paths(
+        save_as, checkpoint_config.get("path"), config_path=config_file
+    )
 
     # Check if checkpoint exists
     if not metadata_path.exists():
