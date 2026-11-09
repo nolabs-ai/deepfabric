@@ -79,6 +79,13 @@ def migrate_v4_to_v5(
         raise DataSetGeneratorError("Unsupported migration path; supported migrations: v4 -> v5")
     if not checkpoint.name.endswith(CHECKPOINT_METADATA_SUFFIX):
         raise DataSetGeneratorError("--checkpoint must name a checkpoint metadata file")
+    for field in ("unique_topics", "cycles_needed"):
+        if field not in original:
+            raise DataSetGeneratorError(f"Missing required v4 checkpoint metadata field: {field}")
+        if type(original[field]) is not int or original[field] < 0:
+            raise DataSetGeneratorError(
+                f"Original v4 checkpoint metadata field '{field}' must be a nonnegative integer"
+            )
     stem = checkpoint.name.removesuffix(CHECKPOINT_METADATA_SUFFIX)
     config = DeepFabricConfig.from_yaml(str(config_path))
     model = load_migration_topics(topics_path, config.topics.mode)
@@ -151,12 +158,13 @@ def migrate_v4_to_v5(
         sample_slots.append([uuid, success_by_topic[uuid].popleft()])
     if any(success_by_topic.values()):
         raise DataSetGeneratorError("Original successful slots do not match persisted rows")
-    # Reject positive legacy plan metadata that contradicts the supplied original inputs.
-    if original.get("unique_topics", 0) not in (0, len(topics)):
+    # Fresh v4 runs can leave these instance fields at zero despite saved progress.
+    # Their presence validates the format; only positive values offer consistency evidence.
+    if original["unique_topics"] not in (0, len(topics)):
         raise DataSetGeneratorError(
             "Original unique topic count differs from the supplied saved topics"
         )
-    if original.get("cycles_needed", 0) not in (0, (target + len(topics) - 1) // len(topics)):
+    if original["cycles_needed"] not in (0, (target + len(topics) - 1) // len(topics)):
         raise DataSetGeneratorError(
             "Original cycle count differs from the supplied effective target"
         )
@@ -255,11 +263,21 @@ def main(argv=None):
     targets.add_argument("--num-steps", type=int, help="Original Python run's legacy step count")
     parser.add_argument("--batch-size", type=int, help="Original run's overridden batch size")
     args = parser.parse_args(argv)
+    print(
+        "Note: v4 checkpoints do not store enough information to verify the original\n"
+        "target. Migration relies on the supplied config and CLI overrides describing\n"
+        "the original run.\n"
+    )
     try:
         checkpoint = (
             args.checkpoint
             if args.checkpoint is not None
             else discover_checkpoint(args.checkpoint_dir)
+        )
+        batch = (
+            args.batch_size
+            if args.batch_size is not None
+            else DeepFabricConfig.from_yaml(str(args.config)).output.batch_size
         )
         path, requested, target = migrate_checkpoint(
             checkpoint,
@@ -272,9 +290,15 @@ def main(argv=None):
         )
     except Exception as exc:  # noqa: BLE001
         parser.exit(1, f"Migration failed: {exc}\n")
-    print(f"Migrated checkpoint: {path}")
-    print(f"Original requested target: {requested}; preserved effective target: {target}")
-    print("Resume with the original saved topics and the exact effective target:")
+    print(f"Requested target from supplied settings: {requested}")
+    rounding = (
+        f"rounded up to a batch multiple of {batch}"
+        if target != requested
+        else "no rounding needed"
+    )
+    print(f"Reconstructed v4 effective target: {target} ({rounding})")
+    print(f"\nMigrated checkpoint: {path}")
+    print("Resume using the command below to match the reconstructed target:")
     print(
         f"deepfabric generate {shlex.quote(str(args.config))} --topics-load {shlex.quote(str(args.topics))} "
         f"--checkpoint-path {shlex.quote(str(args.output_dir))} --checkpoint-interval 10 --resume --num-samples {target}"

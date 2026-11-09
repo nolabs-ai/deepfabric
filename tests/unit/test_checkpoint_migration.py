@@ -73,6 +73,10 @@ def original(tmp_path):
 
 async def test_partial_migration_and_resume_preserves_rows(original):
     metadata, config, topics, destination = original
+    legacy = json.loads(metadata.read_text())
+    assert legacy["unique_topics"] == legacy["cycles_needed"] == 0
+    assert legacy["total_samples"] > 0
+    assert legacy["completed"]
     source_files = list(metadata.parent.iterdir())
     before = {p: p.read_bytes() for p in source_files}
     output, requested, effective = migrate_v4_to_v5(*original)
@@ -109,6 +113,75 @@ async def test_partial_migration_and_resume_preserves_rows(original):
     result = await engine.create_data_async(num_samples=8, topic_model=model)
     assert len(result) == 8
     assert engine._generate_sample_outcome.await_count == 1
+
+
+@pytest.mark.parametrize("field", ["unique_topics", "cycles_needed"])
+@pytest.mark.parametrize("value", [None, -1, True, False, 0.0, "0", [], {}])
+def test_refuses_invalid_legacy_plan_metadata(original, field, value):
+    metadata, _, _, destination = original
+    data = json.loads(metadata.read_text())
+    data[field] = value
+    metadata.write_text(json.dumps(data))
+    before = {p: p.read_bytes() for p in metadata.parent.iterdir() if p.is_file()}
+
+    with pytest.raises(
+        DataSetGeneratorError,
+        match=f"metadata field '{field}' must be a nonnegative integer",
+    ):
+        migrate_v4_to_v5(*original)
+
+    assert not destination.exists()
+    assert all(p.read_bytes() == content for p, content in before.items())
+
+
+@pytest.mark.parametrize("field", ["unique_topics", "cycles_needed"])
+def test_refuses_missing_legacy_plan_metadata(original, field):
+    metadata, _, _, destination = original
+    data = json.loads(metadata.read_text())
+    del data[field]
+    metadata.write_text(json.dumps(data))
+    before = {p: p.read_bytes() for p in metadata.parent.iterdir() if p.is_file()}
+
+    with pytest.raises(
+        DataSetGeneratorError, match=f"Missing required v4 checkpoint metadata field: {field}"
+    ):
+        migrate_v4_to_v5(*original)
+
+    assert not destination.exists()
+    assert all(p.read_bytes() == content for p, content in before.items())
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("unique_topics", 3, "Original unique topic count differs"),
+        ("cycles_needed", 5, "Original cycle count differs"),
+    ],
+)
+def test_refuses_contradictory_positive_legacy_plan_metadata(original, field, value, message):
+    metadata, _, _, destination = original
+    data = json.loads(metadata.read_text())
+    data[field] = value
+    metadata.write_text(json.dumps(data))
+    before = {p: p.read_bytes() for p in metadata.parent.iterdir() if p.is_file()}
+
+    with pytest.raises(DataSetGeneratorError, match=message):
+        migrate_v4_to_v5(*original)
+
+    assert not destination.exists()
+    assert all(p.read_bytes() == content for p, content in before.items())
+
+
+def test_accepts_consistent_positive_legacy_plan_metadata(original):
+    metadata, _, _, _ = original
+    data = json.loads(metadata.read_text())
+    data.update(unique_topics=2, cycles_needed=4)
+    metadata.write_text(json.dumps(data))
+
+    output, _, effective = migrate_v4_to_v5(*original)
+
+    assert effective == 8
+    assert json.loads(output.read_text())["plan"]["target"] == effective
 
 
 @pytest.mark.parametrize(
@@ -194,9 +267,42 @@ def test_real_script_entry_point(original, directory_input):
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    assert "preserved effective target: 8" in result.stdout
+    assert result.stdout.startswith(
+        "Note: v4 checkpoints do not store enough information to verify the original\n"
+        "target. Migration relies on the supplied config and CLI overrides describing\n"
+        "the original run.\n"
+    )
+    assert "Requested target from supplied settings: 5" in result.stdout
+    assert (
+        "Reconstructed v4 effective target: 8 (rounded up to a batch multiple of 4)"
+        in result.stdout
+    )
     assert "--num-samples 8" in result.stdout
     assert "Supported migrations: v4 -> v5" in script.read_text()
+
+
+def test_cli_reports_override_target_without_rounding(original, capsys):
+    metadata, config, topics, destination = original
+    main(
+        [
+            "--checkpoint",
+            str(metadata),
+            "--config",
+            str(config),
+            "--topics",
+            str(topics),
+            "--output-dir",
+            str(destination),
+            "--num-samples",
+            "8",
+            "--batch-size",
+            "8",
+        ]
+    )
+    output = capsys.readouterr().out
+    assert "Requested target from supplied settings: 8" in output
+    assert "Reconstructed v4 effective target: 8 (no rounding needed)" in output
+    assert "--resume --num-samples 8" in output
 
 
 def test_graph_topology_loaded_offline():
