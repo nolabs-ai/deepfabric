@@ -302,9 +302,17 @@ python tools/migrate_checkpoint.py \
 
 Use `--checkpoint-dir DIR` when the directory contains exactly one checkpoint, or `--checkpoint FILE` to select its metadata explicitly. The tool finds the associated samples and failures in the same directory.
 
-Supported migrations: **v4 -> v5**, for topic-model checkpoints with the original configuration and saved topics. Migration preserves the originals and requires a new destination directory. Supply original overrides with `--num-samples`, `--batch-size`, or `--num-steps` if applicable. Ambiguous identities, inconsistent inputs, and unsupported checkpoint modes are rejected.
+Supported migrations: **v4 -> v5**, for topic-model checkpoints with the original configuration and saved topics. Migration preserves the originals and requires a new destination directory. Supply original overrides with `--num-samples`, `--batch-size`, or `--num-steps` if applicable. 
+Ambiguous identities, inconsistent inputs, and unsupported checkpoint modes are rejected.
 
-Migration preserves the original effective target, including old batch rounding. For an old request of 25 and batch size 10, the migrated target remains 30. Use the exact resume command printed by the helper. If migration is forcibly terminated, remove any incomplete destination before retrying.
+Migration reconstructs the effective target from the supplied config and supplied run overrides. It replicates the old batch rounding behaviour: For a supplied request of 25 and batch size 10, the reconstructed target is 30. The helper prints the supplied request, reconstructed target and rounding explanation, then the matching v5 resume command.
+
+!!! warning "V4 target verification limits"
+    V4 checkpoints do not store the original requested target, batch size, config-content hash or invocation arguments. The v4 writer initializes `unique_topics` and `cycles_needed` to zero and never assigns the calculated generation values to them, and therefore provide no target evidence.
+
+Use the exact resume command printed by the helper to match the reconstructed plan, even when it includes a larger target because of legacy rounding. 
+
+The migration script does not overwrite an existing destination directory. If migration is forcibly terminated, remove its incomplete destination directory or choose a new one before rerunning the script.
 
 #### Python Exact Targets
 
