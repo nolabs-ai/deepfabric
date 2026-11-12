@@ -225,7 +225,7 @@ deepfabric generate config.yaml --resume --retry-failed
 | `--checkpoint-interval N` | Save checkpoint every N samples |
 | `--checkpoint-path PATH` | Override checkpoint directory (rarely needed) |
 | `--resume` | Resume from existing checkpoint |
-| `--retry-failed` | When resuming, retry previously failed samples |
+| `--retry-failed` | Implies `--resume`; process outstanding slots and retry previously failed slots |
 
 !!! info "Checkpoint Location"
     Checkpoints are stored in an XDG-compliant location: `~/.local/share/deepfabric/checkpoints/` (or `$XDG_DATA_HOME/deepfabric/checkpoints/`). Each config file gets its own subdirectory based on a hash of its path, so different projects don't interfere with each other.
@@ -265,21 +265,37 @@ Press ++ctrl+c++ once during generation to request a graceful stop. The generato
 
 The TUI status panel shows "Stopping: at next checkpoint" to confirm the stop is pending. Press ++ctrl+c++ a second time to force quit immediately (no checkpoint saved).
 
-### Checkpoint Conflicts
+### Existing checkpoints
 
-If you start generation without `--resume` but a checkpoint already exists for that configuration, you'll be prompted:
+If you start generation without `--resume` but a checkpoint already exists for that configuration, DeepFabric prompts you to choose how to continue. The prompt will look something like this:
 
+```text
+⚠ Existing checkpoint found for this configuration: 3 successful samples, 1 failed, 2 outstanding.
+
+  1) Resume without retrying failed samples [default]
+  2) Resume and retry failed samples
+  3) Clear checkpoint and start fresh
+  4) Abort
+
+  Choose [1/2/3/4] (auto-1 in 20s):
 ```
-⚠ Existing checkpoint found for this configuration
 
-  1) Resume from checkpoint
-  2) Clear checkpoint and start fresh
-  3) Abort
+The choices and default depend on the saved checkpoint state, as shown below. 
 
-Choose an option [1/2/3] (1):
-```
+| Saved state | Choices | Default |
+| --- | --- | --- |
+| Only failed slots remain | Retry failed samples / Clear checkpoint and start fresh / Abort | Retry failed samples |
+| Failed and outstanding slots remain | Resume without retrying failed samples / Resume and retry failed samples / Clear checkpoint and start fresh / Abort | Resume without retrying failed samples |
+| Outstanding slots remain without failures | Resume from checkpoint / Clear checkpoint and start fresh / Abort | Resume from checkpoint |
 
-This prevents accidentally overwriting or corrupting existing checkpoint data.
+This occurs before DeepFabric generates or saves topics to prevent accidental override.
+
+Explicit `--resume` bypasses the prompt unless only failed slots remain. Enabling retries with `--retry-failed` or `output.checkpoint.retry_failed: true` bypasses it in either case.
+
+On POSIX systems the displayed default is selected after 20 seconds or immediately at EOF, including closed stdin in CI. The default is chosen to offer a useful continuation in any case.
+
+If no checkpoint is available, `--resume`, `--retry-failed`, and their combination fall back to fresh generation. Incompatible checkpoints produce an error. If the saved topic graph or tree is missing when resuming, DeepFabric exits with an error asking you to provide the original file via `--topics-load`.
+
 
 ## Error Recovery
 

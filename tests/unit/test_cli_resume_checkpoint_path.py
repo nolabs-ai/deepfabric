@@ -9,8 +9,9 @@ import yaml
 from click.testing import CliRunner
 
 from deepfabric.cli import cli
-from deepfabric.constants import CHECKPOINT_METADATA_SUFFIX
+from deepfabric.constants import CHECKPOINT_METADATA_SUFFIX, CHECKPOINT_VERSION
 from deepfabric.generator import DataSetGenerator
+from deepfabric.sampling import topic_plan
 from deepfabric.utils import build_checkpoint_file_paths
 
 
@@ -43,7 +44,21 @@ def config_file(tmp_path, checkpoint_dir):
 def write_checkpoint_metadata(checkpoint_dir, topics_file):
     checkpoint_dir.mkdir(exist_ok=True)
     metadata = checkpoint_dir / f"dataset{CHECKPOINT_METADATA_SUFFIX}"
-    metadata.write_text(json.dumps({"topics_file": str(topics_file)}))
+    metadata.write_text(
+        json.dumps(
+            {
+                "version": CHECKPOINT_VERSION,
+                "plan": topic_plan(
+                    2, [{"uuid": "leaf", "topic": "leaf", "path": ["root", "leaf"]}]
+                ),
+                "completed": [],
+                "sample_slots": [],
+                "total_samples": 0,
+                "total_failures": 0,
+                "topics_file": str(topics_file),
+            }
+        )
+    )
 
 
 def invoke_generate(args):
@@ -63,6 +78,7 @@ def invoke_generate(args):
         )
 
     with (
+        patch("deepfabric.generator.LLMClient"),
         patch("deepfabric.cli.check_for_updates"),
         patch("deepfabric.cli._validate_api_keys"),
         patch("deepfabric.cli._initialize_topic_model", side_effect=topic_stage),

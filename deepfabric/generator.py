@@ -578,14 +578,8 @@ class DataSetGenerator:
         self._flushed_samples_count = metadata["total_samples"]
         failures = read_jsonl(self._checkpoint_failures_path)
         self._flushed_failures_count = len(failures)
-        if retry_failed and failures:
-            self._completed.difference_update(
-                (f["topic_id"], f["sample_ordinal"]) for f in failures
-            )
-            # The failed slots are now outstanding, with no superseded failure records.
-            self._checkpoint_failures_path.write_text("", encoding="utf-8")
-            self._flushed_failures_count = 0
-            self._save_checkpoint_metadata()
+        if retry_failed:
+            self.retry_checkpoint_failures()
         logger.info(
             "Loaded checkpoint: %d samples, %d failures, %d settled slots",
             self._flushed_samples_count,
@@ -593,6 +587,22 @@ class DataSetGenerator:
             len(self._completed),
         )
         return True
+
+    def retry_checkpoint_failures(self) -> None:
+        """Reopen failed slots after a loaded checkpoint's resume is committed.
+
+        CLI startup first loads read-only and collects all choices. This separate
+        step prevents an aborted prompt from truncating checkpoint failures.
+        """
+        if not self._checkpoint_loaded:
+            raise DataSetGeneratorError("Retry requires an actually loaded checkpoint")
+        failures = read_jsonl(self._checkpoint_failures_path)
+        if not failures:
+            return
+        self._completed.difference_update((f["topic_id"], f["sample_ordinal"]) for f in failures)
+        self._checkpoint_failures_path.write_text("", encoding="utf-8")
+        self._flushed_failures_count = 0
+        self._save_checkpoint_metadata()
 
     def clear_checkpoint(self) -> None:
         """Remove checkpoint files."""
