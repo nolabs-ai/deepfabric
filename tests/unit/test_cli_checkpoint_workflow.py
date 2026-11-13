@@ -363,3 +363,45 @@ def test_complete_success_explicit_choices(workflow, choice):
     else:
         assert workflow.snapshot() == before
         assert len(workflow.calls) == calls
+
+
+def break_checkpoint(workflow, kind):
+    assert workflow.run().exit_code == 0
+    metadata = workflow.paths[0]
+    if kind == "torn":
+        metadata.write_text(metadata.read_text()[:40])
+    else:
+        metadata.write_text(json.dumps({"version": 4, "completed": [], "total_samples": 0}))
+
+
+@pytest.mark.parametrize("kind", ["torn", "v4"])
+@pytest.mark.parametrize("flags", [(), ("--resume",), ("--retry-failed",)])
+def test_unloadable_checkpoint_defaults_to_abort_without_changes(workflow, kind, flags):
+    break_checkpoint(workflow, kind)
+    before = workflow.snapshot()
+    calls = len(workflow.calls)
+    topic_calls = workflow.topics.await_count
+
+    result = workflow.run(*flags)
+
+    assert result.exit_code == 1, result.output
+    assert "Existing checkpoint cannot be loaded" in result.output
+    assert "Abort [default]" in result.output
+    assert workflow.snapshot() == before
+    assert len(workflow.calls) == calls
+    assert workflow.topics.await_count == topic_calls
+
+
+@pytest.mark.parametrize("kind", ["torn", "v4"])
+def test_unloadable_checkpoint_can_be_cleared_for_a_fresh_run(workflow, kind):
+    break_checkpoint(workflow, kind)
+    calls = len(workflow.calls)
+
+    with patch("deepfabric.cli._prompt_with_timeout", return_value="1"):
+        result = workflow.run()
+
+    assert result.exit_code == 0, result.output
+    assert "Checkpoint cleared, starting fresh generation" in result.output
+    assert len(workflow.calls) == calls + 4
+    assert len(rows(workflow.dataset)) == 4
+    assert not any(path.exists() for path in workflow.paths)

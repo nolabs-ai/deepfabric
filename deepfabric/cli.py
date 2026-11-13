@@ -27,7 +27,7 @@ from .config import DeepFabricConfig
 from .config_manager import apply_cli_overrides, get_final_parameters, load_config
 from .constants import CHECKPOINT_VERSION
 from .dataset_manager import create_dataset, resolve_num_samples, save_dataset
-from .exceptions import ConfigurationError
+from .exceptions import ConfigurationError, DataSetGeneratorError
 from .generator import DataSetGenerator
 from .graph import Graph
 from .llm import VerificationStatus, verify_provider_api_key
@@ -481,7 +481,13 @@ def _prepare_output_destinations(preparation, options) -> str:
         return directory
 
     engine = DataSetGenerator(**_generation_engine_params(preparation, options, directory))
-    if not engine.load_checkpoint(retry_failed=False):
+    try:
+        loaded = engine.load_checkpoint(retry_failed=False)
+    except (DataSetGeneratorError, ValueError) as exc:
+        _unloadable_checkpoint_choice(engine, paths[0], exc)
+        options.resume = options.retry_failed = False
+        return directory
+    if not loaded:
         return directory
     failures = engine._flushed_failures_count
     outstanding = engine._generation_plan["target"] - len(engine._completed)
@@ -526,6 +532,24 @@ def _prepare_output_destinations(preparation, options) -> str:
     if options.retry_failed:
         options.prepared_engine.retry_checkpoint_failures()
     return directory
+
+
+def _unloadable_checkpoint_choice(
+    engine: DataSetGenerator, metadata_path: Path, exc: Exception
+) -> None:
+    """Offer clear or abort for a checkpoint that cannot be loaded; abort exits non-zero."""
+    tui = get_tui()
+    tui.error(f"Existing checkpoint cannot be loaded: {metadata_path}")
+    tui.error(f"Reason: {exc}")
+    tui.console.print()
+    tui.console.print("  1) Clear checkpoint and start fresh", markup=False)
+    tui.console.print("  2) Abort [default]", markup=False)
+    tui.console.print()
+    if _prompt_with_timeout(["1", "2"], default="2", timeout=20) != "1":
+        tui.info("Aborted; all existing files are unchanged")
+        sys.exit(1)
+    engine.clear_checkpoint()
+    tui.info("Checkpoint cleared, starting fresh generation")
 
 
 def _checkpoint_choice(

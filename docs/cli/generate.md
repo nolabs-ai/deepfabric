@@ -299,7 +299,7 @@ If saving or cleanup fails or is interrupted, a fully successful checkpoint may 
 
 On POSIX systems the displayed default is selected after 20 seconds or immediately at EOF, including closed stdin in CI. The default is chosen to offer a useful continuation in any case.
 
-If no checkpoint is available, `--resume`, `--retry-failed`, and their combination fall back to fresh generation. Incompatible checkpoints produce an error. If the saved topic graph or tree is missing when resuming, DeepFabric exits with an error asking you to provide the original file via `--topics-load`.
+If no checkpoint is available, `--resume`, `--retry-failed`, and their combination fall back to fresh generation. If an existing checkpoint cannot be loaded (for example a version 4 checkpoint, or metadata damaged by an interrupted write), DeepFabric shows its path and the reason, and offers *Clear checkpoint and start fresh* or *Abort*. Abort is the default and exits with status 1 without changing any files; a version 4 checkpoint can be migrated instead of cleared. If the saved topic graph or tree is missing when resuming, DeepFabric exits with an error asking you to provide the original file via `--topics-load`.
 
 
 ## Error Recovery
