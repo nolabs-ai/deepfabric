@@ -4,7 +4,6 @@ import pytest
 
 from deepfabric.dataset_manager import create_dataset_async, resolve_num_samples
 from deepfabric.exceptions import ConfigurationError
-from deepfabric.generator import DataSetGenerator
 from deepfabric.graph import Graph
 from deepfabric.tree import Tree
 
@@ -46,11 +45,14 @@ def topic_model(request):
 
 @pytest.mark.parametrize("raw_count, expected", [("auto", 6), ("50%", 3), ("200%", 12), (5, 5)])
 @pytest.mark.parametrize("override", [False, True])
-async def test_sample_counts_use_unique_topics(topic_model, raw_count, expected, override):
+@pytest.mark.parametrize("batch_size", [1, 4, 20])
+async def test_sample_counts_use_unique_topics(
+    topic_model, raw_count, expected, override, batch_size
+):
     config = Mock()
     config.get_output_config.return_value = {
         "num_samples": 100 if override else raw_count,
-        "batch_size": 1,
+        "batch_size": batch_size,
     }
     config.get_generation_params.return_value = {"model_name": "test-model"}
     engine = Mock()
@@ -72,13 +74,9 @@ async def test_sample_counts_use_unique_topics(topic_model, raw_count, expected,
 
     assert result is dataset
     call = engine.create_data_with_events_async.call_args.kwargs
-    total_samples = call["num_steps"] * call["batch_size"]
-    assert total_samples == expected
+    assert call["num_samples"] == expected
+    assert call["batch_size"] == batch_size
     assert call["topic_model"] is topic_model
-    if raw_count == "auto":
-        topics, cycles = DataSetGenerator._prepare_unique_topics(engine, total_samples, topic_model)
-        assert topics == topic_model.get_unique_topics()
-        assert cycles == 1
 
 
 @pytest.mark.parametrize("raw_count", ["auto", "50%", "200%"])

@@ -93,7 +93,7 @@ FAILED_TREE_SUFFIX = "_failed.jsonl"
 CHECKPOINT_METADATA_SUFFIX = ".checkpoint.json"
 CHECKPOINT_SAMPLES_SUFFIX = ".checkpoint.jsonl"
 CHECKPOINT_FAILURES_SUFFIX = ".checkpoint.failures.jsonl"
-CHECKPOINT_VERSION = 4  # v4: (uuid, cycle) tuple tracking for cycle-based generation
+CHECKPOINT_VERSION = 5  # v5: exact allocation plan and per-sample ordinal tracking
 
 # Stream simulation defaults
 STREAM_SIM_CHUNK_SIZE = 8  # characters per chunk

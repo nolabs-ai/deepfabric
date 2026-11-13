@@ -110,14 +110,14 @@ deepfabric generate config.yaml \
 | Parameter | Description |
 |-----------|-------------|
 | `--num-samples` | Total samples: integer, `auto`, or percentage (e.g., `50%`, `200%`) |
-| `--batch-size` | Affects generation speed and resource usage |
+| `--batch-size` | Maximum concurrent topic tasks; samples within a topic are sequential |
 | `--include-system-message` | Include system prompts in training examples |
 | `--no-system-message` | Exclude system prompts from training examples |
 
 !!! tip "Automatic Sample Count"
-    Use `--num-samples auto` to generate exactly one sample per topic path. Use percentages like `--num-samples 50%` for partial coverage or `--num-samples 200%` to cycle through topics multiple times.
+    Use `--num-samples auto` to allocate one sample per unique topic (tree leaf or non-root graph node). Use `--num-samples 50%` to select the existing ordered prefix, or `--num-samples 200%` for two slots per topic in one pass. Terminal failures can reduce successful output rows.
 
-    Integer values larger than the number of topic paths work the same way—`--num-samples 100` with 50 paths is equivalent to `--num-samples 200%`.
+    Integer targets use the same allocation: `--num-samples 100` with 50 unique topics is equivalent to `--num-samples 200%`. Targets are never rounded to a batch multiple.
 
 ## Conversation Type Options
 
@@ -225,7 +225,7 @@ deepfabric generate config.yaml --resume --retry-failed
 | `--checkpoint-interval N` | Save checkpoint every N samples |
 | `--checkpoint-path PATH` | Override checkpoint directory (rarely needed) |
 | `--resume` | Resume from existing checkpoint |
-| `--retry-failed` | When resuming, retry previously failed samples |
+| `--retry-failed` | Implies `--resume`; process outstanding slots and retry previously failed slots |
 
 !!! info "Checkpoint Location"
     Checkpoints are stored in an XDG-compliant location: `~/.local/share/deepfabric/checkpoints/` (or `$XDG_DATA_HOME/deepfabric/checkpoints/`). Each config file gets its own subdirectory based on a hash of its path, so different projects don't interfere with each other.
@@ -248,8 +248,14 @@ On resume, the generator:
 - Continues from where it left off
 - Optionally retries failed samples with `--retry-failed`
 
+After generation completes, DeepFabric removes the checkpoint once the output is saved successfully and no failed slots remain. If failures remain, the checkpoint is kept so they can be retried.
+
 !!! info "Memory Optimization"
-    When checkpointing is enabled, samples are flushed to disk periodically, keeping memory usage constant regardless of dataset size. This allows generating datasets with 50,000+ samples without memory issues.
+    Checkpointing periodically flushes samples to disk, reducing sample buffering during generation. Completion identities remain in memory, and final dataset assembly loads the saved rows.
+
+### Migrating Older Checkpoints
+
+Version 4 checkpoints require migration before resuming. See [Migrating Version 4 Checkpoints](../dataset-generation/configuration.md#migrating-version-4-checkpoints) for the helper command and required inputs.
 
 ### Graceful Stop
 
@@ -261,26 +267,47 @@ Press ++ctrl+c++ once during generation to request a graceful stop. The generato
 
 The TUI status panel shows "Stopping: at next checkpoint" to confirm the stop is pending. Press ++ctrl+c++ a second time to force quit immediately (no checkpoint saved).
 
-### Checkpoint Conflicts
+### Existing checkpoints
 
-If you start generation without `--resume` but a checkpoint already exists for that configuration, you'll be prompted:
+If you start generation without `--resume` but a checkpoint already exists for that configuration, DeepFabric prompts you to choose how to continue. The prompt will look something like this:
 
+```text
+⚠ Existing checkpoint found for this configuration: 3 successful samples, 1 failed, 2 outstanding.
+
+  1) Resume without retrying failed samples [default]
+  2) Resume and retry failed samples
+  3) Clear checkpoint and start fresh
+  4) Abort
+
+  Choose [1/2/3/4] (auto-1 in 20s):
 ```
-⚠ Existing checkpoint found for this configuration
 
-  1) Resume from checkpoint
-  2) Clear checkpoint and start fresh
-  3) Abort
+The choices and default depend on the saved checkpoint state, as shown below. 
 
-Choose an option [1/2/3] (1):
-```
+| Saved state | Choices | Default |
+| --- | --- | --- |
+| Only failed slots remain | Retry failed samples / Clear checkpoint and start fresh / Abort | Retry failed samples |
+| Failed and outstanding slots remain | Resume without retrying failed samples / Resume and retry failed samples / Clear checkpoint and start fresh / Abort | Resume without retrying failed samples |
+| Outstanding slots remain without failures | Resume from checkpoint / Clear checkpoint and start fresh / Abort | Resume from checkpoint |
+| All slots succeeded | Save samples to output and remove checkpoint / Clear checkpoint and start fresh / Abort | Abort for a plain invocation; save for explicit `--resume`/`--retry-failed` |
 
-This prevents accidentally overwriting or corrupting existing checkpoint data.
+This occurs before DeepFabric generates or saves topics to prevent accidental override.
+
+Explicit `--resume` bypasses the prompt unless only failed slots remain or all slots succeeded. Enabling retries with `--retry-failed` or `output.checkpoint.retry_failed: true` bypasses it unless all slots succeeded.
+
+If saving or cleanup fails or is interrupted, a fully successful checkpoint may remain. The save option validates the topics and plan, saves samples to the output path selected by the config or `--output-save-as`, then removes the checkpoint.
+
+On POSIX systems the displayed default is selected after 20 seconds or immediately at EOF, including closed stdin in CI. The default is chosen to offer a useful continuation in any case.
+
+If no checkpoint is available, `--resume`, `--retry-failed`, and their combination fall back to fresh generation. If an existing checkpoint cannot be loaded (for example a version 4 checkpoint, or metadata damaged by an interrupted write), DeepFabric shows its path and the reason, and offers *Clear checkpoint and start fresh* or *Abort*. Abort is the default and exits with status 1 without changing any files; a version 4 checkpoint can be migrated instead of cleared. If the saved topic graph or tree is missing when resuming, DeepFabric exits with an error asking you to provide the original file via `--topics-load`.
+
 
 ## Error Recovery
 
 !!! warning "Partial Failures"
     When generation fails partway through, the system saves intermediate results where possible. Topic trees are saved incrementally, enabling recovery by loading partial results and continuing from the dataset generation stage. With checkpointing enabled, dataset generation progress is also preserved.
+
+Generation errors and handled interruptions can also save partial dataset exports. See [Partial Results After Errors or Interruptions](../dataset-generation/configuration.md#partial-results-after-errors-or-interruptions) for filenames and recovery behavior.
 
 ??? tip "Optimizing Generation Performance"
     Balance `batch-size` with your API rate limits and system resources. Larger batches increase throughput but consume more memory and may trigger rate limiting. Start with smaller batches and increase based on your provider's capabilities.
