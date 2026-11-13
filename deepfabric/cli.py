@@ -485,8 +485,15 @@ def _prepare_output_destinations(preparation, options) -> str:
         return directory
     failures = engine._flushed_failures_count
     outstanding = engine._generation_plan["target"] - len(engine._completed)
-    if not options.resume or (failures and not outstanding and not options.retry_failed):
-        action = _checkpoint_choice(engine._flushed_samples_count, failures, outstanding)
+    complete = not failures and not outstanding
+    if (
+        complete
+        or not options.resume
+        or (failures and not outstanding and not options.retry_failed)
+    ):
+        action = _checkpoint_choice(
+            engine._flushed_samples_count, failures, outstanding, resume_requested=options.resume
+        )
         if action == "abort":
             get_tui().info("Aborted; all existing files are unchanged")
             sys.exit(0)
@@ -514,20 +521,29 @@ def _prepare_output_destinations(preparation, options) -> str:
         get_tui().info(f"Resume: auto-loading topics from {inferred}")
     engine.config.topics_file = str(Path(options.topics_load).resolve())
     options.prepared_engine = engine
-    if options.retry_failed:
+    if options.retry_failed or complete:
         _prepare_retry_checkpoint(preparation, options, directory)
+    if options.retry_failed:
         options.prepared_engine.retry_checkpoint_failures()
     return directory
 
 
-def _checkpoint_choice(samples: int, failures: int, outstanding: int) -> str:
-    """Choose a useful continuation, retaining the existing default of continuation."""
+def _checkpoint_choice(
+    samples: int, failures: int, outstanding: int, *, resume_requested: bool = False
+) -> str:
+    """Choose continuation, or recovery/abort when all slots already succeeded."""
     tui = get_tui()
     tui.warning(
         f"Existing checkpoint found for this configuration: {samples} successful samples, "
         f"{failures} failed, {outstanding} outstanding."
     )
-    if failures and not outstanding:
+    default = "1"
+    if not failures and not outstanding:
+        tui.info("All checkpoint slots succeeded. No generation remains.")
+        actions = [("save", "Save samples to output and remove checkpoint")]
+        if not resume_requested:
+            default = "3"
+    elif failures and not outstanding:
         tui.info("Plain resume would generate no new samples.")
         actions = [("retry", "Retry failed samples")]
     elif failures:
@@ -540,11 +556,11 @@ def _checkpoint_choice(samples: int, failures: int, outstanding: int) -> str:
     actions.extend([("clear", "Clear checkpoint and start fresh"), ("abort", "Abort")])
     tui.console.print()
     for index, (_, label) in enumerate(actions, 1):
-        suffix = " [default]" if index == 1 else ""
+        suffix = " [default]" if str(index) == default else ""
         tui.console.print(f"  {index}) {label}{suffix}", markup=False)
     tui.console.print()
     choices = [str(index) for index in range(1, len(actions) + 1)]
-    choice = _prompt_with_timeout(choices, default="1", timeout=20)
+    choice = _prompt_with_timeout(choices, default=default, timeout=20)
     return actions[int(choice) - 1][0]
 
 
@@ -576,7 +592,7 @@ def _generation_engine_params(preparation, options, checkpoint_dir):
 
 
 def _prepare_retry_checkpoint(preparation, options, checkpoint_dir):
-    """Validate actual loaded retry state and topic plan without mutating files."""
+    """Validate loaded state and topic plan before retry or completed-run saving."""
     if not options.topics_load:
         raise ConfigurationError(
             "--retry-failed requires the checkpoint's existing compatible topics"

@@ -248,6 +248,8 @@ On resume, the generator:
 - Continues from where it left off
 - Optionally retries failed samples with `--retry-failed`
 
+After generation completes, DeepFabric removes the checkpoint once the output is saved successfully and no failed slots remain. If failures remain, the checkpoint is kept so they can be retried.
+
 !!! info "Memory Optimization"
     Checkpointing periodically flushes samples to disk, reducing sample buffering during generation. Completion identities remain in memory, and final dataset assembly loads the saved rows.
 
@@ -287,10 +289,13 @@ The choices and default depend on the saved checkpoint state, as shown below.
 | Only failed slots remain | Retry failed samples / Clear checkpoint and start fresh / Abort | Retry failed samples |
 | Failed and outstanding slots remain | Resume without retrying failed samples / Resume and retry failed samples / Clear checkpoint and start fresh / Abort | Resume without retrying failed samples |
 | Outstanding slots remain without failures | Resume from checkpoint / Clear checkpoint and start fresh / Abort | Resume from checkpoint |
+| All slots succeeded | Save samples to output and remove checkpoint / Clear checkpoint and start fresh / Abort | Abort for a plain invocation; save for explicit `--resume`/`--retry-failed` |
 
 This occurs before DeepFabric generates or saves topics to prevent accidental override.
 
-Explicit `--resume` bypasses the prompt unless only failed slots remain. Enabling retries with `--retry-failed` or `output.checkpoint.retry_failed: true` bypasses it in either case.
+Explicit `--resume` bypasses the prompt unless only failed slots remain or all slots succeeded. Enabling retries with `--retry-failed` or `output.checkpoint.retry_failed: true` bypasses it unless all slots succeeded.
+
+If saving or cleanup fails or is interrupted, a fully successful checkpoint may remain. The save option validates the topics and plan, saves samples to the output path selected by the config or `--output-save-as`, then removes the checkpoint.
 
 On POSIX systems the displayed default is selected after 20 seconds or immediately at EOF, including closed stdin in CI. The default is chosen to offer a useful continuation in any case.
 

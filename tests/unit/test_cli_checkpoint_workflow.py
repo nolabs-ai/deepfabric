@@ -274,3 +274,92 @@ def test_retry_without_checkpointing_preserves_fresh_run_fallback(workflow):
     assert "No checkpoint found, starting fresh generation" in result.output
     assert len(workflow.calls) == 4
     assert not workflow.paths[0].exists()
+
+
+def completed_success_checkpoint(workflow):
+    """Leave the final successful checkpoint as an interrupted cleanup would."""
+    assert workflow.run().exit_code == 0
+    with patch.object(DataSetGenerator, "clear_checkpoint"):
+        result = workflow.run("--retry-failed")
+    assert result.exit_code == 0, result.output
+    assert json.loads(workflow.paths[0].read_text())["total_failures"] == 0
+    workflow.dataset.unlink()
+
+
+@pytest.mark.parametrize(
+    "flags", [("--resume",), ("--retry-failed",), ("--resume", "--retry-failed")]
+)
+def test_complete_success_explicit_continuation_saves_without_generation(workflow, flags):
+    completed_success_checkpoint(workflow)
+    calls = len(workflow.calls)
+    topic_calls = workflow.topics.await_count
+    result = workflow.run(*flags)
+    assert result.exit_code == 0, result.output
+    assert "No generation remains" in result.output
+    assert "Save samples to output and remove checkpoint [default]" in result.output
+    assert len(rows(workflow.dataset)) == 4
+    assert len(workflow.calls) == calls
+    assert workflow.topics.await_count == topic_calls
+    assert not any(path.exists() for path in workflow.paths)
+
+
+def test_complete_success_plain_invocation_defaults_to_abort(workflow):
+    completed_success_checkpoint(workflow)
+    before = workflow.snapshot()
+    calls = len(workflow.calls)
+    result = workflow.run()
+    assert result.exit_code == 0, result.output
+    assert "Abort [default]" in result.output
+    assert workflow.snapshot() == before
+    assert len(workflow.calls) == calls
+
+
+@pytest.mark.parametrize("failure", ["plan", "topics", "save", "cleanup"])
+def test_complete_success_recovery_failures_preserve_checkpoint(workflow, failure):
+    completed_success_checkpoint(workflow)
+    if failure == "plan":
+        settings = yaml.safe_load(workflow.config.read_text())
+        settings["output"]["num_samples"] = 5
+        workflow.config.write_text(yaml.safe_dump(settings))
+    elif failure == "topics":
+        workflow.dataset.with_name("topics.jsonl").unlink()
+    before = {p: p.read_bytes() for p in workflow.paths if p.exists()}
+    calls = len(workflow.calls)
+    if failure == "save":
+        with patch("deepfabric.cli.save_dataset", side_effect=OSError("test save failure")):
+            result = workflow.run("--resume")
+    elif failure == "cleanup":
+        with patch.object(
+            DataSetGenerator, "clear_checkpoint", side_effect=OSError("test cleanup failure")
+        ):
+            result = workflow.run("--resume")
+    else:
+        result = workflow.run("--resume")
+    assert result.exit_code == (0 if failure == "cleanup" else 1), result.output
+    assert {p: p.read_bytes() for p in before} == before
+    assert len(workflow.calls) == calls
+    if failure == "cleanup":
+        assert len(rows(workflow.dataset)) == 4
+        assert "Failed to clean up checkpoint files" in result.output
+    else:
+        assert not workflow.dataset.exists()
+
+
+@pytest.mark.parametrize("choice", ["1", "2", "3"])
+def test_complete_success_explicit_choices(workflow, choice):
+    completed_success_checkpoint(workflow)
+    before = workflow.snapshot()
+    calls = len(workflow.calls)
+    with patch("deepfabric.cli._prompt_with_timeout", return_value=choice):
+        result = workflow.run()
+    assert result.exit_code == 0, result.output
+    if choice == "1":
+        assert len(rows(workflow.dataset)) == 4
+        assert len(workflow.calls) == calls
+        assert not any(path.exists() for path in workflow.paths)
+    elif choice == "2":
+        assert len(workflow.calls) == calls + 4
+        assert len(rows(workflow.dataset)) == 4
+    else:
+        assert workflow.snapshot() == before
+        assert len(workflow.calls) == calls
