@@ -497,6 +497,11 @@ def _prepare_output_destinations(preparation, options) -> str:
             return directory
         options.resume = True
         options.retry_failed = action == "retry"
+    elif failures and not options.retry_failed:
+        get_tui().info(
+            "Previously failed slots will be skipped. Use --retry-failed to continue "
+            "outstanding work and retry failed slots."
+        )
 
     if not options.topics_load:
         inferred = _get_checkpoint_topics_path(directory, config.output.save_as)

@@ -141,6 +141,7 @@ def test_mixed_checkpoint_resume_and_retry_are_distinct(workflow, retry):
     assert result.exit_code == 0, result.output
     assert "Plain resume would generate no new samples" not in result.output
     assert "1 outstanding" in result.output
+    assert "Previously failed slots will be skipped" not in result.output
     assert len(workflow.calls) == (6 if retry else 5)
     assert len(rows(workflow.dataset)) == (5 if retry else 4)
     assert workflow.paths[0].exists() is not retry
@@ -197,6 +198,11 @@ def test_explicit_continuation_with_outstanding_slots_bypasses_prompt(workflow, 
 
     assert result.exit_code == 0, result.output
     retry = "--retry-failed" in flags
+    guidance = (
+        "Previously failed slots will be skipped. Use --retry-failed to continue "
+        "outstanding work and retry failed slots."
+    )
+    assert (guidance in " ".join(result.output.split())) is not retry
     assert len(workflow.calls) == (6 if retry else 5)
     assert len(rows(workflow.dataset)) == (5 if retry else 4)
 
