@@ -2,6 +2,9 @@
 
 Supported migrations: v4 -> v5
 Scope: validated topic-model checkpoints with the original config and saved topics.
+V4 does not retain a verifiable original target, config fingerprint, or invocation.
+Config and CLI overrides must describe the original run; they are not resize options.
+Migrated checkpoints cannot acquire the original run's provenance retrospectively.
 No-topic checkpoints and ambiguous/inconsistent original plans are not supported.
 Select metadata with --checkpoint, or use --checkpoint-dir for a directory containing
 exactly one checkpoint. Migration writes .tmp files into a new destination directory,

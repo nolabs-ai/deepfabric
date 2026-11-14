@@ -411,7 +411,7 @@ in order: **checkpoint → topic graph/tree → dataset output**. All choices ar
 collected before any files are deleted; choosing abort leaves existing files
 unchanged.
 
-Similar to [Checkpoint Conflicts](#checkpoint-conflicts), an existing topic or
+Similar to [Existing checkpoints](#existing-checkpoints), an existing topic or
 dataset output prompts you to choose:
 
 1. **Save this run under a new filename.** (default)
