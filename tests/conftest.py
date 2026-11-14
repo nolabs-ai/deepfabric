@@ -1,7 +1,7 @@
-"""
-Pytest configuration for DeepFabric tests.
+"""Shared test-mode and telemetry setup for every test category.
 
-This file is automatically loaded by pytest and configures the test environment.
+Pytest loads this before importing tests in unit, component, and integration.
+Category-specific fixtures belong in each category's own conftest.py.
 """
 
 import os

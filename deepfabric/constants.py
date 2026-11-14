@@ -39,7 +39,7 @@ ROLE_ASSISTANT = "assistant"
 VALID_ROLES = [ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT]
 
 # Placeholders
-SYSTEM_PROMPT_VAR = "{{{{system_prompt}}}}"
+GENERATION_SYSTEM_PROMPT_VAR = "{{{{generation_system_prompt}}}}"
 INSTRUCTIONS_VAR = "{{{{instructions}}}}"
 EXAMPLES_VAR = "{{{{examples}}}}"
 SUBTOPICS_VAR = "{{{{subtopics}}}}"
@@ -94,6 +94,10 @@ CHECKPOINT_METADATA_SUFFIX = ".checkpoint.json"
 CHECKPOINT_SAMPLES_SUFFIX = ".checkpoint.jsonl"
 CHECKPOINT_FAILURES_SUFFIX = ".checkpoint.failures.jsonl"
 CHECKPOINT_VERSION = 5  # v5: exact allocation plan and per-sample ordinal tracking
+# Pragmatic early warning for growing prompt cost: roughly 12k-17k tokens for
+# typical English, with substantial variation by language/content. Agreed as an
+# initial heuristic, not benchmark-derived or a model context limit; never trims.
+SEQUENTIAL_PROMPT_WARNING_CHARS = 50_000
 
 # Stream simulation defaults
 STREAM_SIM_CHUNK_SIZE = 8  # characters per chunk

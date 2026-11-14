@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import json
 import os
@@ -5,6 +6,7 @@ import platform
 import select
 import signal
 import sys
+import time
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
@@ -20,18 +22,30 @@ import yaml
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic import ValidationError as PydanticValidationError
+from rich.text import Text
 
 from .auth import auth as auth_group
 from .checkpoint import version_error
 from .config import DeepFabricConfig
 from .config_manager import apply_cli_overrides, get_final_parameters, load_config
-from .constants import CHECKPOINT_VERSION
+from .constants import (
+    CHECKPOINT_FAILURES_SUFFIX,
+    CHECKPOINT_METADATA_SUFFIX,
+    CHECKPOINT_SAMPLES_SUFFIX,
+    CHECKPOINT_VERSION,
+)
 from .dataset_manager import create_dataset, resolve_num_samples, save_dataset
 from .exceptions import ConfigurationError, DataSetGeneratorError
 from .generator import DataSetGenerator
 from .graph import Graph
 from .llm import VerificationStatus, verify_provider_api_key
+from .llm.prompt_trace import get_prompt_trace, prompt_tracing
+from .llm.token_usage import TokenUsageTracker, active_token_tracker, track_token_usage
 from .metrics import set_trace_debug, trace
+from .output_safety import clear_output, output_session, protect_paths
+from .prompt_preview import preview_generation
+from .prompt_templates import template_manifest
+from .run_report import RunReport, file_reference, record_event, reporting
 from .topic_manager import load_or_build_topic_model, save_topic_model
 from .topic_model import TopicModel
 from .tui import configure_tui, get_dataset_tui, get_tui
@@ -45,6 +59,11 @@ from .utils import (
     parse_num_samples,
 )
 from .validation import show_validation_success, validate_path_requirements
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 OverrideValue = str | int | float | bool | None
 OverrideMap = dict[str, OverrideValue]
@@ -131,6 +150,7 @@ class GenerateOptions(BaseModel):
     topics_save_as: str | None = None
     topics_load: str | None = None
     output_save_as: str | None = None
+    run_report_path: str | None = None
     provider: str | None = None
     model: str | None = None
     temperature: float | None = None
@@ -162,6 +182,11 @@ class GenerateOptions(BaseModel):
     retry_failed: bool = False
     prepared_engine: DataSetGenerator | None = None
     prepared_topics: TopicModel | None = None
+    replace_retry_output: bool = False
+    trace_prompt: bool = False
+    trace_prompt_file: str | None = None
+    verbose: bool = False
+    dry_run: bool = False
 
     @model_validator(mode="after")
     def validate_mode_constraints(self) -> "GenerateOptions":
@@ -307,7 +332,8 @@ def _load_and_prepare_generation_context(
 
     # Step 2: Validate API keys EARLY - this is critical for user feedback
     # This must happen before any LLM operations and should be clearly visible
-    _validate_api_keys(config, options.provider)
+    if not options.dry_run:
+        _validate_api_keys(config, options.provider)
 
     topics_overrides_raw, generation_overrides_raw = apply_cli_overrides(
         output_system_prompt=options.output_system_prompt,
@@ -333,7 +359,7 @@ def _load_and_prepare_generation_context(
     loading_existing = bool(options.topics_load)
 
     # Skip path validation for topic-only mode since we're not generating dataset samples
-    if not skip_path_validation:
+    if not skip_path_validation and not options.dry_run:
         validate_path_requirements(
             mode=config.topics.mode,
             depth=final_depth,
@@ -385,11 +411,12 @@ def _initialize_topic_model(
     )
 
     if not options.topics_load:
-        save_topic_model(
+        actual = save_topic_model(
             topic_model=topic_model,
             config=preparation.config,
             topics_save_as=options.topics_save_as,
         )
+        options.topics_save_as = actual
 
     return topic_model
 
@@ -415,7 +442,12 @@ def _trigger_cloud_upload(
 
     from .cloud_upload import handle_cloud_upload  # noqa: PLC0415
 
-    graph_path = options.topics_save_as or preparation.config.topics.save_as or "topic_graph.json"
+    graph_path = (
+        options.topics_load
+        or options.topics_save_as
+        or preparation.config.topics.save_as
+        or "topic_graph.json"
+    )
 
     handle_cloud_upload(
         dataset_path=dataset_path,
@@ -431,12 +463,18 @@ def _prompt_with_timeout(
 ) -> str:
     """Prompt for a choice with a visible countdown, auto-selecting default on timeout."""
     if platform.system() == "Windows":
-        return click.prompt(
-            f"  Choose [{'/'.join(choices)}]",
-            type=click.Choice(choices),
-            default=default,
-        )
+        if msvcrt is not None and sys.stdin.isatty():
+            return _windows_prompt_with_timeout(choices, default, timeout)
+        line = sys.stdin.readline().strip()
+        return line if line in choices else default
     valid = set(choices)
+    try:
+        sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        # In-memory CLI hosts have no descriptor for select(), but may supply
+        # explicit input. EOF selects the same non-destructive default.
+        line = sys.stdin.readline().strip()
+        return line if line in valid else default
     for remaining in range(timeout, 0, -1):
         sys.stdout.write(f"\r  Choose [{'/'.join(choices)}] (auto-{default} in {remaining:2d}s): ")
         sys.stdout.flush()
@@ -453,8 +491,72 @@ def _prompt_with_timeout(
     return default
 
 
+def _windows_prompt_with_timeout(choices, default, timeout):
+    """Read a Windows console without blocking the collision-choice timeout."""
+    deadline = time.monotonic() + timeout
+    entered = ""
+    try:
+        while time.monotonic() < deadline:
+            remaining = max(1, int(deadline - time.monotonic()) + 1)
+            sys.stdout.write(
+                f"\r  Choose [{'/'.join(choices)}] (auto-{default} in {remaining:2d}s): {entered} "
+            )
+            sys.stdout.flush()
+            if msvcrt.kbhit():
+                character = msvcrt.getwch()
+                if character in ("\r", "\n"):
+                    return entered.strip() if entered.strip() in choices else default
+                if character == "\x03":
+                    raise KeyboardInterrupt
+                if character in ("\x00", "\xe0"):
+                    msvcrt.getwch()  # Consume an extended key's scan code.
+                elif character == "\b":
+                    entered = entered[:-1]
+                else:
+                    entered += character
+            time.sleep(0.05)
+        return default
+    finally:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def _show_existing_path(kind: str, path: str | Path) -> None:
+    """Emphasize the file identity while leaving its full path unstyled."""
+    target = Path(path).expanduser()
+    if target.exists() or target.is_symlink():
+        get_tui().console.print(
+            Text.assemble(
+                (f"Existing {kind}: {target.name}", "bold yellow"), " | ", str(target.absolute())
+            ),
+            highlight=False,
+        )
+
+
+def _collision_choice(path: str, *, topics: bool = False, continuing: bool = False) -> str:
+    """Collect collision policy without creating files or probing write access."""
+    target = Path(path).expanduser()
+    if not target.exists() and not target.is_symlink():
+        return "unique"
+    tui = get_tui()
+    _show_existing_path("topic output" if topics else "dataset output", path)
+    tui.console.print("  1) Save this run under a new filename")
+    label = "Clear output and continue" if continuing else "Clear and start fresh"
+    tui.console.print(f"  2) {label} (delete after all choices are confirmed)")
+    tui.console.print("  3) Abort")
+    choices = ["1", "2", "3"]
+    if topics:
+        tui.console.print("  4) Use existing topics (resume progress if requested)")
+        choices.append("4")
+    choice = _prompt_with_timeout(choices, default="1", timeout=20)
+    if choice == "3":
+        tui.info("Aborted; all existing files are unchanged")
+        sys.exit(0)
+    return {"1": "unique", "2": "clear", "4": "load"}[choice]
+
+
 def _prepare_output_destinations(preparation, options) -> str:
-    """Resolve checkpoint choices before building topics or mutating saved progress."""
+    """Collect checkpoint/topic/dataset decisions before any destructive action."""
     config = preparation.config
     checkpoint_config = config.output.checkpoint
     paths = build_checkpoint_file_paths(
@@ -470,73 +572,133 @@ def _prepare_output_destinations(preparation, options) -> str:
         if checkpoint_config
         else None
     )
-    if options.topic_only:
-        return directory
-    options.retry_failed = options.retry_failed or bool(
-        checkpoint_config and checkpoint_config.retry_failed
+    stem = Path(config.output.save_as).stem
+    topic_path = (
+        options.topics_save_as
+        or config.topics.save_as
+        or ("topic_graph.json" if config.topics.mode == "graph" else "topic_tree.jsonl")
     )
-    options.resume = options.resume or options.retry_failed
-    # Preserve --resume's existing fresh-run fallback when no checkpoint is available.
-    if interval is None or not paths[0].exists():
-        return directory
+    dataset_path = options.output_save_as or config.output.save_as
+    inferred = _get_checkpoint_topics_path(directory, config.output.save_as)
+    trace_session = get_prompt_trace()
+    get_tui().console.print("Existing files (topic output is conditional on resume/loading):")
+    for kind, path in [
+        ("configuration input", options.config_file),
+        ("topic input", options.topics_load),
+        ("checkpoint topic reference", inferred),
+        *(("checkpoint", path) for path in paths),
+        ("topic output (if generated)", topic_path),
+        ("dataset output", None if options.topic_only else dataset_path),
+        ("report output (planned)", options.run_report_path),
+        ("prompt trace output", trace_session.path if trace_session else None),
+    ]:
+        if path:
+            _show_existing_path(kind, path)
+    _check_output_aliases(options, topic_path, dataset_path, directory, stem)
 
-    engine = DataSetGenerator(**_generation_engine_params(preparation, options, directory))
-    try:
-        loaded = engine.load_checkpoint(retry_failed=False)
-    except (DataSetGeneratorError, ValueError) as exc:
-        _unloadable_checkpoint_choice(engine, paths[0], exc)
-        options.resume = options.retry_failed = False
-        return directory
-    if not loaded:
-        return directory
-    failures = engine._flushed_failures_count
-    outstanding = engine._generation_plan["target"] - len(engine._completed)
-    complete = not failures and not outstanding
-    if (
-        complete
-        or not options.resume
-        or (failures and not outstanding and not options.retry_failed)
-    ):
-        action = _checkpoint_choice(
-            engine._flushed_samples_count, failures, outstanding, resume_requested=options.resume
+    deletions = []
+    engine = None
+    complete = False
+    if not options.topic_only:
+        options.retry_failed = options.retry_failed or bool(
+            checkpoint_config and checkpoint_config.retry_failed
         )
-        if action == "abort":
-            get_tui().info("Aborted; all existing files are unchanged")
-            sys.exit(0)
-        if action == "clear":
-            engine.clear_checkpoint()
-            options.resume = options.retry_failed = False
-            get_tui().info("Checkpoint cleared, starting fresh generation")
-            return directory
-        options.resume = True
-        options.retry_failed = action == "retry"
-    elif failures and not options.retry_failed:
-        get_tui().info(
-            "Previously failed slots will be skipped. Use --retry-failed to continue "
-            "outstanding work and retry failed slots."
-        )
+        options.resume = options.resume or options.retry_failed
+        if interval is not None and paths[0].exists():
+            engine = DataSetGenerator(**_generation_engine_params(preparation, options, directory))
+            try:
+                loaded = engine.load_checkpoint(retry_failed=False)
+            except (DataSetGeneratorError, ValueError) as exc:
+                _unloadable_checkpoint_choice(paths[0], exc)
+                deletions.extend(paths)
+                options.resume = options.retry_failed = False
+                loaded = False
+            if not loaded:
+                engine = None
+            else:
+                failures = engine._flushed_failures_count
+                outstanding = engine._generation_plan["target"] - len(engine._completed)
+                complete = not failures and not outstanding
+                if (
+                    complete
+                    or not options.resume
+                    or (failures and not outstanding and not options.retry_failed)
+                ):
+                    action = _checkpoint_choice(
+                        engine._flushed_samples_count,
+                        failures,
+                        outstanding,
+                        resume_requested=options.resume,
+                    )
+                    if action == "abort":
+                        get_tui().info("Aborted; all existing files are unchanged")
+                        sys.exit(0)
+                    if action == "clear":
+                        deletions.extend(paths)
+                        options.resume = options.retry_failed = False
+                        engine = None
+                    else:
+                        options.resume = True
+                        options.retry_failed = action == "retry"
+                elif failures and not options.retry_failed:
+                    get_tui().info(
+                        "Previously failed slots will be skipped. Use --retry-failed to continue "
+                        "outstanding work and retry failed slots."
+                    )
+        # Missing/disabled checkpoint retains the existing fresh-generation fallback.
+        if engine is not None:
+            if not options.topics_load:
+                if not inferred or not Path(inferred).is_file():
+                    raise ConfigurationError(
+                        "Cannot resume: checkpoint topics are missing; "
+                        "provide the original saved topics with --topics-load"
+                    )
+                options.topics_load = inferred
+                get_tui().info(f"Resume: auto-loading topics from {inferred}")
+            engine.config.topics_file = str(Path(options.topics_load).resolve())
+            options.prepared_engine = engine
+            if options.retry_failed or complete:
+                _prepare_retry_checkpoint(preparation, options, directory)
 
     if not options.topics_load:
-        inferred = _get_checkpoint_topics_path(directory, config.output.save_as)
-        if not inferred or not Path(inferred).is_file():
-            raise ConfigurationError(
-                "Cannot resume: checkpoint topics are missing; "
-                "provide the original saved topics with --topics-load"
-            )
-        options.topics_load = inferred
-        get_tui().info(f"Resume: auto-loading topics from {inferred}")
-    engine.config.topics_file = str(Path(options.topics_load).resolve())
-    options.prepared_engine = engine
-    if options.retry_failed or complete:
-        _prepare_retry_checkpoint(preparation, options, directory)
-    if options.retry_failed:
-        options.prepared_engine.retry_checkpoint_failures()
+        choice = _collision_choice(topic_path, topics=True, continuing=options.resume)
+        if choice == "clear":
+            deletions.append(Path(topic_path))
+        elif choice == "load":
+            options.topics_load = topic_path
+    continuing = options.resume or bool(options.topics_load)
+    if options.retry_failed and engine is not None:
+        options.replace_retry_output = True
+        get_tui().info(
+            "Retrying checkpoint failures: selected dataset output will be replaced "
+            "only after a successful save: " + str(dataset_path)
+        )
+    elif (
+        not options.topic_only and _collision_choice(dataset_path, continuing=continuing) == "clear"
+    ):
+        deletions.append(Path(dataset_path))
+    _check_output_aliases(options, topic_path, dataset_path, directory, stem)
+    inputs = [path for path in (options.config_file, options.topics_load) if path]
+    for target in deletions:
+        for input_path in inputs:
+            source = Path(input_path).expanduser()
+            if target.expanduser().resolve() == source.resolve() or (
+                target.exists() and source.exists() and target.samefile(source)
+            ):
+                raise ConfigurationError(f"Cannot clear path that aliases an input: {target}")
+    protect_paths(*inputs)
+    for target in dict.fromkeys(deletions):
+        clear_output(target)
+        get_tui().info(f"Output cleared: {target}")
+    if any(path in deletions for path in paths):
+        get_tui().info("Checkpoint cleared, starting fresh generation")
+    protect_paths(*paths)
+    if options.retry_failed and engine is not None:
+        engine.retry_checkpoint_failures()
     return directory
 
 
-def _unloadable_checkpoint_choice(
-    engine: DataSetGenerator, metadata_path: Path, exc: Exception
-) -> None:
+def _unloadable_checkpoint_choice(metadata_path: Path, exc: Exception) -> None:
     """Offer clear or abort for a checkpoint that cannot be loaded; abort exits non-zero."""
     tui = get_tui()
     tui.error(f"Existing checkpoint cannot be loaded: {metadata_path}")
@@ -548,8 +710,6 @@ def _unloadable_checkpoint_choice(
     if _prompt_with_timeout(["1", "2"], default="2", timeout=20) != "1":
         tui.info("Aborted; all existing files are unchanged")
         sys.exit(1)
-    engine.clear_checkpoint()
-    tui.info("Checkpoint cleared, starting fresh generation")
 
 
 def _checkpoint_choice(
@@ -636,6 +796,38 @@ def _prepare_retry_checkpoint(preparation, options, checkpoint_dir):
     options.prepared_topics = topic_model
 
 
+def _check_output_aliases(options, topic_path, dataset_path, directory, stem):
+    """Reject destructive equality and existing hard-link aliases before work."""
+    inputs = [path for path in (options.config_file, options.topics_load) if path]
+    outputs = [] if options.topic_only else [dataset_path]
+    if not options.topics_load:
+        outputs.append(topic_path)
+    if options.run_report_path:
+        outputs.append(options.run_report_path)
+    trace_session = get_prompt_trace()
+    if trace_session and trace_session.path:
+        outputs.append(str(trace_session.path))
+    checkpoints = [
+        str(Path(directory) / f"{stem}{suffix}")
+        for suffix in (
+            CHECKPOINT_METADATA_SUFFIX,
+            CHECKPOINT_SAMPLES_SUFFIX,
+            CHECKPOINT_FAILURES_SUFFIX,
+        )
+    ]
+    protected = inputs + checkpoints
+    for index, output in enumerate(outputs):
+        target = Path(output).expanduser()
+        for other in protected + outputs[:index]:
+            source = Path(other).expanduser()
+            if target.resolve() == source.resolve() or (
+                target.exists() and source.exists() and target.samefile(source)
+            ):
+                raise ConfigurationError(
+                    f"Output path aliases another input/output: {output} ({other})"
+                )
+
+
 def _run_generation(
     *,
     preparation: GenerationPreparation,
@@ -715,12 +907,30 @@ def _run_generation(
         # No checkpoint — save whatever was generated so far
         if dataset and len(dataset) > 0:
             tui.info(f"Saving {len(dataset)} samples generated before stop")
-            save_dataset(dataset, output_save_path, preparation.config, engine=engine)
+            saved = save_dataset(
+                dataset,
+                output_save_path,
+                preparation.config,
+                engine=engine,
+                replace=options.replace_retry_output,
+            )
+            output_save_path = saved.dataset_path
+            options.output_save_as = output_save_path
+            record_event("dataset_saved", path=output_save_path, rows=len(dataset))
         else:
             tui.warning("No samples were generated before stop")
         return
 
-    save_dataset(dataset, output_save_path, preparation.config, engine=engine)
+    saved = save_dataset(
+        dataset,
+        output_save_path,
+        preparation.config,
+        engine=engine,
+        replace=options.replace_retry_output,
+    )
+    output_save_path = saved.dataset_path
+    options.output_save_as = output_save_path
+    record_event("dataset_saved", path=output_save_path, rows=len(dataset))
 
     # Clean up checkpoint files after successful completion. Keep them when samples
     # failed, so the failed slots can still be retried with --resume --retry-failed.
@@ -734,11 +944,10 @@ def _run_generation(
                 "command with --resume --retry-failed"
             )
         else:
-            try:
-                engine.clear_checkpoint()
-                tui.info("Checkpoint files cleaned up after successful generation")
-            except OSError as e:
-                tui.warning(f"Failed to clean up checkpoint files: {e}")
+            # Final accounting/report publication precedes deletion in generate's finally.
+            tracker = active_token_tracker()
+            if tracker is not None:
+                tracker.checkpoint_cleanup = engine
 
     trace(
         "dataset_generated",
@@ -751,6 +960,54 @@ def _run_generation(
         options=options,
         dataset_path=output_save_path,
     )
+
+
+def _report_token_usage(tracker: TokenUsageTracker) -> None:
+    """Display exact token counts after the live TUI stops, without creating files."""
+    report = tracker.snapshot()
+    _display_token_usage(report)
+    if "cumulative" in report:
+        tui = get_tui()
+        tui.info("Cumulative recorded token usage (all recorded invocations)")
+        _display_token_usage(report["cumulative"])
+        if report["cumulative"]["prior_usage_unknown"]:
+            tui.warning("Earlier checkpoint token usage is unknown (legacy checkpoint).")
+        if report["cumulative"]["persistence_failures"]:
+            tui.warning(
+                "Some token accounting snapshots could not be saved; persisted usage may be incomplete."
+            )
+        if report["cumulative"]["unfinished_invocations"]:
+            tui.warning("Unfinished invocations may have unrecorded provider usage.")
+
+
+def _display_token_usage(report: dict) -> None:
+    if not report["requests"]:
+        return
+    tui = get_tui()
+    for group in report["by_model"]:
+        tokens = group["tokens"]
+        counts = " ".join(
+            f"{label}={tokens[field]:,}" if tokens[field] is not None else f"{label}=unknown"
+            for label, field in (
+                ("input", "input_tokens"),
+                ("output", "output_tokens"),
+                ("total", "total_tokens"),
+            )
+        )
+        partial = " (incomplete)" if not group["complete"] else ""
+        tui.info(f"Token usage • {group['provider']}/{group['model']} • {counts}{partial}")
+        if any(
+            tokens[key] is not None
+            for key in ("reasoning_tokens", "cached_input_tokens", "cache_creation_input_tokens")
+        ):
+            tui.info(
+                f"  reasoning={tokens['reasoning_tokens'] if tokens['reasoning_tokens'] is not None else 'unknown'} "
+                f"cached_input={tokens['cached_input_tokens'] if tokens['cached_input_tokens'] is not None else 'unknown'} "
+                f"cache_creation_input={tokens['cache_creation_input_tokens'] if tokens['cache_creation_input_tokens'] is not None else 'unknown'} "
+                "(included in output/input counts)"
+            )
+    if not report["complete"]:
+        tui.warning("Token totals are incomplete: some calls did not return full usage metadata.")
 
 
 @cli.command()
@@ -850,6 +1107,27 @@ def _run_generation(
     is_flag=True,
     help="Resume an existing checkpoint and retry failed samples as well as outstanding slots",
 )
+@click.option("--trace-prompt", is_flag=True, help="Record prompts to a JSONL file.")
+@click.option(
+    "--trace-prompt-file",
+    type=click.Path(dir_okay=False),
+    help="Trace file (requires --trace-prompt).",
+)
+@click.option("--verbose", is_flag=True, help="Trace every prompt instead of the first per stage.")
+@click.option(
+    "--run-report",
+    type=click.Path(dir_okay=False),
+    is_flag=False,
+    flag_value="",
+    default=None,
+    metavar="[PATH]",
+    help="Save run metrics and token usage (default: <output-stem>.report.json beside the dataset).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Preview prompts with placeholders; do not call models or generate output assets.",
+)
 def generate(  # noqa: PLR0913
     config_file: str | None,
     output_system_prompt: str | None = None,
@@ -880,8 +1158,32 @@ def generate(  # noqa: PLR0913
     checkpoint_path: str | None = None,
     resume: bool = False,
     retry_failed: bool = False,
+    trace_prompt: bool = False,
+    trace_prompt_file: str | None = None,
+    verbose: bool = False,
+    dry_run: bool = False,
+    run_report: str | None = None,
 ) -> None:
     """Generate training data from a YAML configuration file or CLI parameters."""
+    if trace_prompt_file and not trace_prompt:
+        raise click.UsageError("--trace-prompt-file requires --trace-prompt")
+    if retry_failed and dry_run:
+        raise click.UsageError(
+            "--retry-failed cannot be combined with --dry-run; retry requires loading a checkpoint"
+        )
+    click.get_current_context().with_resource(
+        prompt_tracing(
+            enabled=trace_prompt, path=trace_prompt_file, verbose=verbose, dry_run=dry_run
+        )
+    )
+    click.get_current_context().with_resource(output_session())
+    usage_tracker = TokenUsageTracker()
+    click.get_current_context().with_resource(track_token_usage(usage_tracker))
+    run_metrics = RunReport() if run_report is not None and not dry_run else None
+    click.get_current_context().with_resource(reporting(run_metrics))
+    run_status = "failed"
+    report_ready = False
+    default_report_path = run_report == ""
     # Handle deprecated --agent-mode flag
     if agent_mode == "multi_turn":
         click.echo(
@@ -941,6 +1243,10 @@ def generate(  # noqa: PLR0913
             checkpoint_path=checkpoint_path,
             resume=resume,
             retry_failed=retry_failed,
+            trace_prompt=trace_prompt,
+            trace_prompt_file=trace_prompt_file,
+            verbose=verbose,
+            dry_run=dry_run,
         )
     except (PydanticValidationError, ValueError) as error:
         handle_error(click.get_current_context(), ConfigurationError(str(error)))
@@ -948,7 +1254,7 @@ def generate(  # noqa: PLR0913
 
     try:
         # Configure TUI before any output
-        configure_tui(options.tui)
+        configure_tui("simple" if dry_run else options.tui)
         tui = get_tui()  # type: ignore
 
         # Show initialization header
@@ -957,13 +1263,116 @@ def generate(  # noqa: PLR0913
 
         preparation = _load_and_prepare_generation_context(options, skip_path_validation=topic_only)
 
-        checkpoint_dir = _prepare_output_destinations(preparation, options)
+        checkpoint_dir = ""
+        if run_metrics is not None:
+            options.run_report_path = run_report or str(
+                Path(options.output_save_as or preparation.config.output.save_as).with_suffix(
+                    ".report.json"
+                )
+            )
+        if not dry_run:
+            checkpoint_dir = _prepare_output_destinations(preparation, options)
+
+        if run_metrics is not None:
+            dataset_path = options.output_save_as or preparation.config.output.save_as
+            run_report = run_report or str(Path(dataset_path).with_suffix(".report.json"))
+            topics_path = (
+                options.topics_save_as
+                or preparation.config.topics.save_as
+                or (
+                    "topic_graph.json"
+                    if preparation.config.topics.mode == "graph"
+                    else "topic_tree.jsonl"
+                )
+            )
+            protected_paths = [
+                config_file,
+                options.topics_load,
+                dataset_path,
+                topics_path,
+                get_prompt_trace().path if get_prompt_trace() else None,
+                *[
+                    str(
+                        Path(checkpoint_dir)
+                        / f"{Path(preparation.config.output.save_as).stem}{suffix}"
+                    )
+                    for suffix in (
+                        CHECKPOINT_METADATA_SUFFIX,
+                        CHECKPOINT_SAMPLES_SUFFIX,
+                        CHECKPOINT_FAILURES_SUFFIX,
+                    )
+                ],
+            ]
+            if any(
+                path
+                and (
+                    Path(path).expanduser().resolve() == Path(run_report).expanduser().resolve()
+                    or (
+                        Path(path).expanduser().exists()
+                        and Path(run_report).expanduser().exists()
+                        and Path(path).expanduser().samefile(Path(run_report).expanduser())
+                    )
+                )
+                for path in protected_paths
+            ):
+                raise ConfigurationError(
+                    "--run-report must differ from input, dataset, topic and prompt-trace paths"
+                )
+            run_metrics.prepare_path(run_report)
+            report_ready = True
+            params = preparation.config.get_generation_params(**preparation.generation_overrides)
+            run_metrics.metadata.update(
+                config=file_reference(config_file),
+                topics=file_reference(options.topics_load),
+                output_path=str(Path(dataset_path).resolve()),
+                topic_only=topic_only,
+                resume_requested=resume,
+                num_samples=preparation.num_samples,
+                concurrency=preparation.batch_size,
+                prompt_templates=template_manifest(
+                    params["prompt_templates"], params["prompt_template"]
+                ),
+                topic_prompt_templates=template_manifest(
+                    preparation.config.topics.prompt_templates
+                ),
+                settings={
+                    key: params.get(key)
+                    for key in (
+                        "provider",
+                        "model_name",
+                        "temperature",
+                        "max_tokens",
+                        "max_retries",
+                        "sample_retries",
+                        "topic_sample_mode",
+                        "shared_scope",
+                        "seed_field",
+                    )
+                },
+            )
+        if dry_run:
+            asyncio.run(
+                preview_generation(
+                    preparation.config,
+                    topics_overrides=preparation.topics_overrides,
+                    generation_overrides=preparation.generation_overrides,
+                    topic_only=topic_only,
+                    topics_load=options.topics_load,
+                    num_samples=preparation.num_samples,
+                )
+            )
+            return
+
+        if run_metrics is not None:
+            run_metrics.metadata["topics"] = file_reference(options.topics_load)
+
         topic_model = options.prepared_topics or _initialize_topic_model(
             preparation=preparation,
             options=options,
         )
 
         if topic_only:
+            run_status = "completed"
             # Cloud upload for topic-only mode (graph only, no dataset)
             _trigger_cloud_upload(
                 preparation=preparation,
@@ -978,6 +1387,7 @@ def generate(  # noqa: PLR0913
             options=options,
             checkpoint_dir=checkpoint_dir,
         )
+        run_status = "completed"
 
     except ConfigurationError as e:
         handle_error(click.get_current_context(), e)
@@ -985,6 +1395,43 @@ def generate(  # noqa: PLR0913
         tui = get_tui()  # type: ignore
         tui.error(f"Unexpected error: {str(e)}")  # type: ignore
         sys.exit(1)
+    finally:
+        if not dry_run:
+            if usage_tracker.accounting is not None:
+                get_tui().info("Token usage for this invocation")
+            _report_token_usage(usage_tracker)
+            report_saved = run_metrics is None
+            if run_metrics is not None and report_ready:
+                try:
+                    if default_report_path and options.output_save_as:
+                        run_report = str(Path(options.output_save_as).with_suffix(".report.json"))
+                    if options.output_save_as:
+                        run_metrics.metadata["output_path"] = str(
+                            Path(options.output_save_as).resolve()
+                        )
+                    actual_report = run_metrics.write(
+                        run_report, usage_tracker.snapshot(), run_status
+                    )
+                except OSError as error:
+                    get_tui().warning(f"Could not save run report: {error}")
+                    run_status = "failed"
+                else:
+                    report_saved = True
+                    get_tui().info(f"Run report saved to {actual_report}")
+            cleanup = getattr(usage_tracker, "checkpoint_cleanup", None)
+            if cleanup is not None:
+                if report_saved:
+                    try:
+                        cleanup.clear_checkpoint()
+                        get_tui().info("Checkpoint files cleaned up after successful generation")
+                    except OSError as error:
+                        get_tui().warning(f"Failed to clean up checkpoint files: {error}")
+                else:
+                    get_tui().warning(
+                        "Keeping checkpoint files because the requested report was not saved."
+                    )
+            if run_status == "failed" and report_ready:
+                sys.exit(1)
 
 
 @cli.command("upload-hf")

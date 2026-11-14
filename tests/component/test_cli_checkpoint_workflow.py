@@ -11,7 +11,7 @@ import yaml
 
 from click.testing import CliRunner
 
-from deepfabric.cli import cli
+from deepfabric.cli import _prompt_with_timeout, cli
 from deepfabric.generator import DataSetGenerator
 from deepfabric.schemas import TopicList
 from deepfabric.utils import build_checkpoint_file_paths
@@ -234,7 +234,15 @@ def test_missing_checkpoint_preserves_fresh_run_fallback(workflow, flags):
 
 def test_timeout_uses_displayed_retry_default(workflow):
     assert workflow.run().exit_code == 0
-    with patch("deepfabric.cli.select.select", return_value=([], [], [])):
+
+    def timed_prompt(*args, **kwargs):
+        with patch("deepfabric.cli.sys.stdin", Mock(fileno=lambda: 0)):
+            return _prompt_with_timeout(*args, **kwargs)
+
+    with (
+        patch("deepfabric.cli.select.select", return_value=([], [], [])),
+        patch("deepfabric.cli._prompt_with_timeout", side_effect=timed_prompt),
+    ):
         result = workflow.run()
     assert result.exit_code == 0, result.output
     assert "auto-1 in" in result.output
@@ -336,7 +344,20 @@ def test_complete_success_recovery_failures_preserve_checkpoint(workflow, failur
     else:
         result = workflow.run("--resume")
     assert result.exit_code == (0 if failure == "cleanup" else 1), result.output
-    assert {p: p.read_bytes() for p in before} == before
+    if failure in ("save", "cleanup"):
+        # Accounting records the recovery invocation; saved slot outcomes remain intact.
+        for path, content in before.items():
+            if path == workflow.paths[0]:
+                original = json.loads(content)
+                current = json.loads(path.read_bytes())
+                for metadata in (original, current):
+                    metadata.pop("created_at", None)
+                    metadata.pop("token_accounting", None)
+                assert current == original
+            else:
+                assert path.read_bytes() == content
+    else:
+        assert {p: p.read_bytes() for p in before} == before
     assert len(workflow.calls) == calls
     if failure == "cleanup":
         assert len(rows(workflow.dataset)) == 4
@@ -396,6 +417,7 @@ def test_unloadable_checkpoint_defaults_to_abort_without_changes(workflow, kind,
 def test_unloadable_checkpoint_can_be_cleared_for_a_fresh_run(workflow, kind):
     break_checkpoint(workflow, kind)
     calls = len(workflow.calls)
+    original_rows = rows(workflow.dataset)
 
     with patch("deepfabric.cli._prompt_with_timeout", return_value="1"):
         result = workflow.run()
@@ -403,5 +425,6 @@ def test_unloadable_checkpoint_can_be_cleared_for_a_fresh_run(workflow, kind):
     assert result.exit_code == 0, result.output
     assert "Checkpoint cleared, starting fresh generation" in result.output
     assert len(workflow.calls) == calls + 4
-    assert len(rows(workflow.dataset)) == 4
+    assert rows(workflow.dataset) == original_rows
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 4
     assert not any(path.exists() for path in workflow.paths)

@@ -1,0 +1,2 @@
+Return an object with an "items" list containing only seed-field values, not whole records.
+Each value must match the supplied item schema and determine a distinct record.

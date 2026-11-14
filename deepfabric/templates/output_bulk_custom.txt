@@ -1,0 +1,1 @@
+Each item is one complete record matching the supplied item schema.

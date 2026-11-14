@@ -1,0 +1,7 @@
+{{ generation_system_prompt }}
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}
+
+{{ tools_section }}
+{{ sequential_history }}{{ output_instructions }}

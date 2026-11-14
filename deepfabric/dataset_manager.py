@@ -6,6 +6,7 @@ import os
 import traceback
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from .config import DeepFabricConfig
 from .config_manager import DEFAULT_MODEL
 from .exceptions import ConfigurationError
 from .generator import DataSetGenerator
+from .output_safety import save_output
 from .progress import ProgressReporter
 from .tui import STREAM_PANEL_WIDTH, get_dataset_tui, get_tui
 from .utils import ensure_not_running_loop
@@ -117,6 +119,7 @@ async def handle_dataset_events_async(
         async for event in generator:
             if isinstance(event, dict) and "event" in event:
                 if event["event"] == "generation_start":
+                    tui.set_large_prompt_topics(0)
                     settings = _get_tui_settings()
                     is_topic_based = event.get("generation_mode") == "topic_allocation"
                     display_batch_size = event.get(
@@ -296,6 +299,20 @@ async def handle_dataset_events_async(
                             headless_batch_size = display_batch_size
                             headless_last_printed = resumed_samples
                             checkpoint_interval = event.get("checkpoint_interval") or 0
+                elif event["event"] == "sequential_prompt_warning":
+                    tui.set_large_prompt_topics(event["affected_topics"])
+                    if event.get("message"):
+                        tui.log_event(event["message"])
+                    if simple_progress is not None and simple_progress_task is not None:
+                        simple_progress.update(
+                            simple_progress_task,
+                            description=(
+                                f"Generating • Large prompts: {event['affected_topics']} "
+                                f"{'topic' if event['affected_topics'] == 1 else 'topics'} "
+                                f"({event['warnings_suppressed']} "
+                                f"{'warning' if event['warnings_suppressed'] == 1 else 'warnings'} suppressed)"
+                            ),
+                        )
                 elif event["event"] == "step_complete" and not event.get(
                     "progress_reported", False
                 ):
@@ -387,6 +404,13 @@ async def handle_dataset_events_async(
                         else:
                             tui.info(f"Checkpoint: {total_samples} samples saved")
 
+                elif event["event"] in ("generation_interrupted", "generation_error"):
+                    # Stop alternate-screen rendering before the generator logs its summary.
+                    if live:
+                        live.stop()
+                    if simple_progress is not None:
+                        simple_progress.stop()
+                        tui.simple_progress = None
                 elif event["event"] == "generation_stopped":
                     # Graceful stop at checkpoint
                     if live:
@@ -459,6 +483,14 @@ async def handle_dataset_events_async(
             get_tui().error(f"🔍 Debug: Full traceback:\n{traceback.format_exc()}")
         get_tui().error(f"Dataset generation failed: {str(e)}")
         raise
+    finally:
+        if live:
+            live.stop()
+        if simple_progress is not None:
+            simple_progress.stop()
+        tui.live_display = None
+        tui.live_layout = None
+        tui.simple_progress = None
 
     return final_result
 
@@ -724,7 +756,7 @@ def _save_failed_samples(
     failed_samples: list,
     tui,
     use_path_directly: bool = False,
-) -> None:
+) -> str:
     """Save failed samples to a file.
 
     Args:
@@ -740,12 +772,12 @@ def _save_failed_samples(
         failures_path = save_path
     else:
         # Generate timestamped filename: my-dataset.jsonl -> my-dataset_failures_20231130_143022.jsonl
-        base_path = save_path.rsplit(".", 1)[0] if "." in save_path else save_path
+        base_path = str(Path(save_path).with_suffix(""))
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         failures_path = f"{base_path}_failures_{timestamp}.jsonl"
 
-    try:
-        with open(failures_path, "w") as f:
+    def write_failures(destination):
+        with open(destination, "w", encoding="utf-8") as f:
             for idx, failure in enumerate(failed_samples):
                 # Structure each failure as a JSON object with metadata
                 failure_record = {
@@ -761,9 +793,18 @@ def _save_failed_samples(
                     # Legacy format: plain string or other type
                     failure_record["error"] = str(failure)
                 f.write(json.dumps(failure_record) + "\n")
-        tui.warning(f"Failed samples saved to: {failures_path} ({len(failed_samples)} failures)")
-    except Exception as e:
-        tui.error(f"Could not save failed samples: {str(e)}")
+
+    actual = save_output(failures_path, write_failures)
+    tui.warning(f"Failed samples saved to: {actual} ({len(failed_samples)} failures)")
+    return actual
+
+
+@dataclass(frozen=True)
+class DatasetSaveResult:
+    """Actual export paths, including a renamed explicit failure destination."""
+
+    dataset_path: str
+    failures_path: str | None = None
 
 
 def save_dataset(
@@ -772,7 +813,9 @@ def save_dataset(
     config: DeepFabricConfig | None = None,
     engine: DataSetGenerator | None = None,
     failures_path: str | None = None,
-) -> None:
+    *,
+    replace: bool = False,
+) -> DatasetSaveResult:
     """
     Save dataset to file.
 
@@ -782,16 +825,23 @@ def save_dataset(
         config: Optional configuration for upload settings
         engine: Optional DataSetGenerator to save failed samples from
         failures_path: Optional explicit path for failures file (overrides auto-generated path)
+        replace: Replace the dataset only after successful serialization.
+
+    Returns:
+        Actual dataset and optional failure-export paths; collisions may add suffixes.
 
     Raises:
         ConfigurationError: If saving fails
     """
     tui = get_tui()
+    saved_failures_path = None
     try:
         # Save the dataset as JSONL, stripping null values injected by HF Dataset
         # HuggingFace Dataset's Arrow schema adds null for missing fields across rows,
         # but we want clean output without null values for optional fields
-        _save_jsonl_without_nulls(dataset, save_path)
+        save_path = save_output(
+            save_path, lambda path: _save_jsonl_without_nulls(dataset, path), replace=replace
+        )
         tui.success(f"Dataset saved to: {save_path}")
 
         # Save failed samples if engine has any (including flushed to checkpoint)
@@ -800,7 +850,7 @@ def save_dataset(
             if all_failures:
                 # Use explicit failures_path if provided, otherwise auto-generate from save_path
                 actual_failures_path = failures_path or save_path
-                _save_failed_samples(
+                saved_failures_path = _save_failed_samples(
                     actual_failures_path, all_failures, tui, use_path_directly=bool(failures_path)
                 )
 
@@ -816,3 +866,5 @@ def save_dataset(
 
     except Exception as e:
         raise ConfigurationError(f"Error saving dataset: {str(e)}") from e
+    else:
+        return DatasetSaveResult(save_path, saved_failures_path)

@@ -1,0 +1,1 @@
+REASONING FORMAT: Generate structured reasoning steps as a list of ReasoningStep objects. Each step should have clear thought and action fields.

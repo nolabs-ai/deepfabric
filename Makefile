@@ -1,4 +1,5 @@
-.PHONY: clean install format lint test-unit test-integration test-integration-verbose security build all
+.PHONY: clean install format lint test-unit test-component test-offline
+.PHONY: test-integration test-integration-verbose security build all
 .PHONY: test-integration-openai test-integration-gemini test-integration-llm
 .PHONY: test-integration-hubs test-integration-spin test-integration-quick
 .PHONY: test-integration-graph test-integration-generator
@@ -25,6 +26,12 @@ lint:
 
 test-unit:
 	uv run pytest tests/unit/
+
+test-component:
+	uv run pytest tests/component/
+
+test-offline:
+	uv run pytest tests/unit/ tests/component/
 
 test-integration:
 	$(PYTEST_INTEGRATION) --maxfail=1
@@ -59,7 +66,7 @@ test-integration-generator:
 security:
 	uv run bandit -r deepfabric/
 
-build: clean test-unit
+build: clean test-offline
 	uv build
 
-all: clean install format lint test-unit test-integration security build
+all: clean install format lint test-offline test-integration security build

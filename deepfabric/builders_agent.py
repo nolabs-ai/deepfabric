@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from .builders import ConversationBuilder
+from .builders import ConversationBuilder, pinned_user_copy
 from .constants import DEFAULT_SAMPLE_RETRIES
 from .exceptions import DataSetGeneratorError
 from .progress import ProgressReporter
+from .prompt_templates import default_template, render_template
 from .schemas import (
     AgentContext,
     AgentStep,
@@ -128,6 +129,7 @@ class SingleTurnAgentBuilder(ConversationBuilder):
 
         # Track seen tool signatures to skip duplicates
         self._seen_tool_signatures: set[str] = set()
+        self._coordinated_generation = False
 
         # Initialize Spin client if endpoint is configured
         spin_endpoint = getattr(config, "spin_endpoint", None)
@@ -146,7 +148,13 @@ class SingleTurnAgentBuilder(ConversationBuilder):
             else:
                 logger.info("Spin execution enabled: %s", spin_endpoint)
 
-    async def generate(self, topic_prompt: str, error_feedback: str | None = None) -> Conversation:
+    async def generate(
+        self,
+        topic_prompt: str,
+        error_feedback: str | None = None,
+        *,
+        pinned_user_message: ChatMessage | None = None,
+    ) -> Conversation:
         """Generate single-turn agent conversation with tools using ReAct loop.
 
         Uses a think-act-observe loop where each step's tool calls are based on
@@ -163,12 +171,20 @@ class SingleTurnAgentBuilder(ConversationBuilder):
         Raises:
             ValueError: If generation fails at any step
         """
+        # Coordination affects retry ownership and output formatting, not agent prompts.
+        self._coordinated_generation = (
+            pinned_user_message is not None or self.config.topic_sample_mode == "sequential"
+        )
         try:
             # Initialize Spin session if configured
             await self._ensure_spin_session()
 
             # Step 1: Generate user question
-            user_message = await self._generate_user_question(topic_prompt)
+            user_message = (
+                pinned_user_copy(pinned_user_message)
+                if pinned_user_message is not None
+                else await self._generate_user_question(topic_prompt)
+            )
 
             # Step 2: ReAct loop - think, act, observe
             all_steps: list[AgentStep] = []
@@ -218,8 +234,11 @@ class SingleTurnAgentBuilder(ConversationBuilder):
                 user_message, all_steps, all_tool_results, agent_response, topic_prompt
             )
         finally:
-            # Always cleanup Spin session
-            await self._cleanup_spin_session()
+            # Always clean up the session and request-scoped coordination state.
+            try:
+                await self._cleanup_spin_session()
+            finally:
+                self._coordinated_generation = False
 
     async def _ensure_spin_session(self) -> None:
         """Initialize Spin session if configured."""
@@ -247,16 +266,32 @@ class SingleTurnAgentBuilder(ConversationBuilder):
             await self._spin_session.cleanup()
             self._spin_session = None
 
-    async def _generate_user_question(self, topic_prompt: str) -> ChatMessage:
-        """Generate the user's question for this scenario.
-
-        Args:
-            topic_prompt: The scenario topic
-
-        Returns:
-            User message (typed ChatMessage)
-        """
-        prompt = f"""Generate a short, natural user question for this scenario:
+    @staticmethod
+    def build_user_question_prompt(
+        topic_prompt: str,
+        *,
+        num_items: int | str = 1,
+        collection: bool = False,
+        collection_request: str | None = None,
+    ) -> str:
+        """Keep independent question framing; vary only collection count/output."""
+        opening = (
+            collection_request
+            or render_template(
+                default_template(
+                    f"request_bulk_conversation_{'single' if num_items == 1 else 'plural'}"
+                ),
+                {"num_items": num_items},
+            )
+            if collection
+            else "Generate a short, natural user question for this scenario:"
+        )
+        output = (
+            'Generate only the user questions as an object with an "items" list of strings:'
+            if collection
+            else "Generate only the user's question:"
+        )
+        return f"""{opening}
 {topic_prompt}
 
 Requirements:
@@ -267,11 +302,20 @@ Requirements:
 
 Example format: "Can you tell me the weather in Paris tomorrow and suggest what to wear?"
 
-Generate only the user's question:"""
+{output}"""
 
+    async def _generate_user_question(self, topic_prompt: str) -> ChatMessage:
+        """Generate the user's question for this scenario.
+
+        Args:
+            topic_prompt: The scenario topic.
+
+        Returns:
+            User message (typed ChatMessage)
+        """
         # Always use non-streaming for reliable structured output
         response = await self.llm.generate_async(
-            prompt=prompt,
+            prompt=self.build_user_question_prompt(topic_prompt),
             schema=UserQuestion,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
@@ -307,7 +351,12 @@ Generate only the user's question:"""
         Returns:
             AgentStep with thought, optional tool calls, and is_final flag
         """
-        max_retries = getattr(self.config, "sample_retries", DEFAULT_SAMPLE_RETRIES)
+        # Coordinated generation has one outer slot budget; do not multiply it here.
+        max_retries = (
+            0
+            if self._coordinated_generation
+            else getattr(self.config, "sample_retries", DEFAULT_SAMPLE_RETRIES)
+        )
         last_error: Exception | None = None
         current_feedback = error_feedback
 
@@ -366,7 +415,14 @@ Generate only the user's question:"""
                 f"\n## Previous Attempt Failed\nError: {error_feedback}\nPlease fix this issue.\n",
             )
 
-        prompt = "\n".join(prompt_parts)
+        prompt = self._render_agent_prompt(
+            "agent_step",
+            "\n".join(prompt_parts),
+            user_message,
+            previous_steps,
+            previous_results,
+            error_feedback=error_feedback,
+        )
 
         # Always use non-streaming for reliable structured output
         response = await self.llm.generate_async(
@@ -539,10 +595,53 @@ Generate only the user's question:"""
             )
         return ToolOutput(result=error_msg)
 
+    def _render_agent_prompt(
+        self,
+        stage: str,
+        default_prompt: str,
+        user_message: ChatMessage,
+        steps: list[AgentStep],
+        tool_results: list[ToolExecution],
+        *,
+        error_feedback: str | None = None,
+        context: str = "",
+    ) -> str:
+        """Render a stage override from the current agent execution state."""
+        source = getattr(self.config.prompt_templates, stage)
+        if source is None:
+            return default_prompt
+        return render_template(
+            source.content,
+            {
+                "default_prompt": default_prompt,
+                "generation_system_prompt": self.config.generation_system_prompt,
+                "dataset_system_prompt": (
+                    self.config.dataset_system_prompt or self.config.generation_system_prompt
+                ),
+                "raw_instructions": self.config.instructions,
+                "user_request": user_message.content,
+                "raw_tools": [tool.model_dump(mode="json") for tool in self.tool_registry.tools],
+                "tools": self._format_tools_for_prompt(),
+                "steps": [step.model_dump(mode="json") for step in steps],
+                "tool_results": [result.model_dump(mode="json") for result in tool_results],
+                "step_history": self._format_step_history(steps, tool_results),
+                "tool_results_text": (
+                    "\n".join(
+                        f"Tool: {result.function_name}\nResult: {result.result}"
+                        for result in tool_results
+                    )
+                    if tool_results
+                    else "No tools were executed."
+                ),
+                "context": context,
+                "raw_retry_feedback": error_feedback,
+            },
+        )
+
     async def _generate_agent_conclusion(
         self,
         user_message: ChatMessage,
-        steps: list[AgentStep],  # noqa: ARG002 - kept for potential future use
+        steps: list[AgentStep],
         tool_results: list[ToolExecution],
         context: str = "",
     ) -> ChatMessage:
@@ -584,6 +683,9 @@ You executed these tools:
 
 Based on these results, provide a clear, helpful response to the user.
 Remember: You have access to the tools listed above and have used them in this conversation."""
+        prompt = self._render_agent_prompt(
+            "agent_response", prompt, user_message, steps, tool_results, context=context
+        )
 
         # Always use non-streaming for reliable structured output
         response = await self.llm.generate_async(
@@ -690,7 +792,11 @@ Remember: You have access to the tools listed above and have used them in this c
 
         reasoning_trace = ReasoningTrace(
             style=self.config.reasoning_style or "agent",  # type: ignore
-            content=reasoning_steps,
+            content=(
+                "\n".join(step.thought for step in reasoning_steps)
+                if self._coordinated_generation and self.config.reasoning_style == "freetext"
+                else reasoning_steps
+            ),
         )
 
         # Build agent context

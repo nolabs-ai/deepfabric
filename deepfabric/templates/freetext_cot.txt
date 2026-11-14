@@ -1,0 +1,7 @@
+Generate a reasoning problem that requires analytical thinking to solve.
+
+Create problems involving mathematics, logic, science, or analytical reasoning that can be solved through clear thinking steps.
+
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}
