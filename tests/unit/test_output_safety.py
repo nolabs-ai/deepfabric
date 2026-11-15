@@ -12,6 +12,7 @@ import pytest
 from deepfabric.dataset_manager import _save_failed_samples
 from deepfabric.output_safety import (
     OutputSaveError,
+    ReplacementAliasError,
     clear_output,
     open_unique,
     output_session,
@@ -161,8 +162,10 @@ def test_replacement_cannot_destroy_a_trace_allocated_during_generation(tmp_path
         actual, stream = open_unique(target)
         with stream:
             stream.write("current trace")
-        with pytest.raises(OutputSaveError, match="aliases"):
+        with pytest.raises(ReplacementAliasError, match="aliases") as raised:
             save_output(actual, write_text, replace=True)
+    assert raised.value.errno == errno.EINVAL
+    assert not (tmp_path / "app" / "recovery").exists()
     assert actual.read_text() == "current trace"
 
 
@@ -171,6 +174,6 @@ def test_clear_cannot_delete_a_protected_input(tmp_path):
     path.write_text("input")
     with output_session():
         protect_paths(path)
-        with pytest.raises(OSError, match="aliases an input"):
+        with pytest.raises(ReplacementAliasError, match="aliases an input"):
             clear_output(path)
     assert path.read_text() == "input"

@@ -42,7 +42,7 @@ from .llm import VerificationStatus, verify_provider_api_key
 from .llm.prompt_trace import get_prompt_trace, prompt_tracing
 from .llm.token_usage import TokenUsageTracker, active_token_tracker, track_token_usage
 from .metrics import set_trace_debug, trace
-from .output_safety import clear_output, output_session, protect_paths
+from .output_safety import clear_output, output_session, protect_paths, refer_to_same_file
 from .prompt_preview import preview_generation
 from .prompt_templates import template_manifest
 from .run_report import RunReport, file_reference, record_event, reporting
@@ -681,10 +681,7 @@ def _prepare_output_destinations(preparation, options) -> str:
     inputs = [path for path in (options.config_file, options.topics_load) if path]
     for target in deletions:
         for input_path in inputs:
-            source = Path(input_path).expanduser()
-            if target.expanduser().resolve() == source.resolve() or (
-                target.exists() and source.exists() and target.samefile(source)
-            ):
+            if refer_to_same_file(target.expanduser(), Path(input_path).expanduser()):
                 raise ConfigurationError(f"Cannot clear path that aliases an input: {target}")
     protect_paths(*inputs)
     for target in dict.fromkeys(deletions):
@@ -819,10 +816,7 @@ def _check_output_aliases(options, topic_path, dataset_path, directory, stem):
     for index, output in enumerate(outputs):
         target = Path(output).expanduser()
         for other in protected + outputs[:index]:
-            source = Path(other).expanduser()
-            if target.resolve() == source.resolve() or (
-                target.exists() and source.exists() and target.samefile(source)
-            ):
+            if refer_to_same_file(target, Path(other).expanduser()):
                 raise ConfigurationError(
                     f"Output path aliases another input/output: {output} ({other})"
                 )
@@ -1303,16 +1297,9 @@ def generate(  # noqa: PLR0913
                     )
                 ],
             ]
+            report_path = Path(run_report).expanduser()
             if any(
-                path
-                and (
-                    Path(path).expanduser().resolve() == Path(run_report).expanduser().resolve()
-                    or (
-                        Path(path).expanduser().exists()
-                        and Path(run_report).expanduser().exists()
-                        and Path(path).expanduser().samefile(Path(run_report).expanduser())
-                    )
-                )
+                path and refer_to_same_file(Path(path).expanduser(), report_path)
                 for path in protected_paths
             ):
                 raise ConfigurationError(

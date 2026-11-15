@@ -33,14 +33,34 @@ def protect_paths(*paths):
         registry.extend(Path(path).expanduser().absolute() for path in paths if path)
 
 
+def refer_to_same_file(a: Path, b: Path) -> bool:
+    """Report whether both paths designate one file, by resolved path or hard link.
+
+    Total where Path.samefile is partial: a missing path is not an alias.
+    """
+    return a.resolve() == b.resolve() or (a.exists() and b.exists() and a.samefile(b))
+
+
+class ReplacementAliasError(OSError):
+    """A requested replacement targets a protected input or published output.
+
+    A caller contract violation, not a filesystem failure: it is detected before
+    any write, so there is nothing to recover and retrying cannot help. Remains an
+    OSError so existing output error handling still degrades rather than crashes.
+    """
+
+    def __init__(self, path, protected):
+        self.path = str(path)
+        self.protected = str(protected)
+        super().__init__(
+            errno.EINVAL, f"Replacement aliases an input or published output: {protected}"
+        )
+
+
 def _check_replacement(path):
     for protected in _protected.get() or []:
-        if path.resolve() == protected.resolve() or (
-            path.exists() and protected.exists() and path.samefile(protected)
-        ):
-            raise OSError(
-                errno.EINVAL, f"Replacement aliases an input or published output: {protected}"
-            )
+        if refer_to_same_file(path, protected):
+            raise ReplacementAliasError(path, protected)
 
 
 def clear_output(path: str | Path) -> None:
@@ -134,11 +154,14 @@ def save_output(path: str | Path, writer: Callable[[str], None], *, replace: boo
     """Publish once; on filesystem failure try one application-data recovery save.
 
     Recovery success still raises OutputSaveError: it is not success at the
-    requested destination. Serialization exceptions are not filesystem failures.
+    requested destination. Serialization exceptions are not filesystem failures,
+    and neither is a replacement alias: it propagates without a recovery attempt.
     """
     target = Path(path).expanduser()
     try:
         actual = _publish(target, writer, replace)
+    except ReplacementAliasError:
+        raise
     except OSError as error:
         try:
             recovery_dir = _get_deepfabric_data_dir() / "recovery"
