@@ -38,12 +38,6 @@ ROLE_USER = "user"
 ROLE_ASSISTANT = "assistant"
 VALID_ROLES = [ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT]
 
-# Placeholders
-GENERATION_SYSTEM_PROMPT_VAR = "{{{{generation_system_prompt}}}}"
-INSTRUCTIONS_VAR = "{{{{instructions}}}}"
-EXAMPLES_VAR = "{{{{examples}}}}"
-SUBTOPICS_VAR = "{{{{subtopics}}}}"
-
 # Retry and backoff settings
 MAX_RETRY_ATTEMPTS = 3
 RETRY_BASE_DELAY = 2  # seconds
