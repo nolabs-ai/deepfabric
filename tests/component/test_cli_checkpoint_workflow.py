@@ -353,6 +353,9 @@ def test_complete_success_recovery_failures_preserve_checkpoint(workflow, failur
                 for metadata in (original, current):
                     metadata.pop("created_at", None)
                     metadata.pop("token_accounting", None)
+                    # Completed slots are serialized from a set, so only their
+                    # membership is meaningful; resume reads them back into a set.
+                    metadata["completed"] = sorted(map(tuple, metadata["completed"]))
                 assert current == original
             else:
                 assert path.read_bytes() == content
