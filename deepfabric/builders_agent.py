@@ -10,6 +10,7 @@ from .builders import ConversationBuilder
 from .constants import DEFAULT_SAMPLE_RETRIES
 from .exceptions import DataSetGeneratorError
 from .progress import ProgressReporter
+from .prompts import VerbalizedSamplingPromptBuilder
 from .schemas import (
     AgentContext,
     AgentStep,
@@ -256,8 +257,10 @@ class SingleTurnAgentBuilder(ConversationBuilder):
         Returns:
             User message (typed ChatMessage)
         """
+        verbalized = getattr(self.config, "sampling", "direct") == "verbalized"
+        method = VerbalizedSamplingPromptBuilder.user_question_instructions() if verbalized else ""
         prompt = f"""Generate a short, natural user question for this scenario:
-{topic_prompt}
+{topic_prompt}{method}
 
 Requirements:
 - Just the user's question - no reasoning, no explanations, no examples

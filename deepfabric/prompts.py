@@ -1,3 +1,6 @@
+from .constants import VERBALIZED_SAMPLING_MAX_EXISTING_TOPICS
+
+
 class TreePromptBuilder:
     """Build dynamic prompts for topic tree expansion with domain-specific examples."""
 
@@ -391,3 +394,125 @@ Create challenging reasoning problems suitable for training systematic problem-s
 {{{{instructions}}}}
 {{{{examples}}}}
 {{{{subtopics}}}}"""
+
+
+class VerbalizedSamplingPromptBuilder:
+    """Prompt additions that implement Verbalized Sampling.
+
+    Direct prompting ("generate N subtopics", "write a user question") tends to collapse
+    onto the most typical completions, so large topic graphs and datasets repeat the same
+    few ideas. Verbalized Sampling (Zhang et al., 2025, arXiv:2510.01171) counters this by
+    asking the model to consider a larger pool of candidates, estimate how typical each one
+    is, and answer from the low-typicality tail.
+
+    Each method returns text that is appended to an existing prompt, so the technique
+    composes with every topic prompt style and builder.
+    """
+
+    CANDIDATE_MULTIPLIER = 3
+    MIN_EXTRA_CANDIDATES = 5
+    QUESTION_CANDIDATES = 5
+
+    @classmethod
+    def existing_topics_block(
+        cls,
+        existing_topics: list[str],
+        max_topics: int = VERBALIZED_SAMPLING_MAX_EXISTING_TOPICS,
+    ) -> str:
+        """List topics generated so far so the model can avoid repeating them.
+
+        Args:
+            existing_topics: Topics already generated, oldest first.
+            max_topics: Keep only the most recent topics, which are the likeliest
+                near-duplicates and keep the prompt bounded on large graphs.
+
+        Returns:
+            A prompt section, or an empty string when there is nothing to list.
+        """
+        recent = [t for t in existing_topics if t][-max_topics:] if max_topics > 0 else []
+        if not recent:
+            return ""
+        topic_list = "\n".join(f"- {topic}" for topic in recent)
+        return (
+            "\n\nTopics already generated elsewhere -- do NOT repeat, paraphrase, or produce a "
+            "near-duplicate of any of these (the same underlying idea in different words still "
+            f"counts as a duplicate):\n{topic_list}"
+        )
+
+    @classmethod
+    def subtopic_instructions(cls, num_subtopics: int) -> str:
+        """Instructions for choosing subtopics with Verbalized Sampling.
+
+        Args:
+            num_subtopics: Number of subtopics the prompt asks for.
+
+        Returns:
+            A prompt section describing the method.
+        """
+        pool_size = max(
+            num_subtopics * cls.CANDIDATE_MULTIPLIER, num_subtopics + cls.MIN_EXTRA_CANDIDATES
+        )
+        return f"""
+
+METHOD -- Verbalized Sampling (use this instead of writing down the first {num_subtopics} ideas that come to mind):
+1. Silently brainstorm about {pool_size} candidate subtopics, covering the full space of plausible options rather than only the most obvious ones.
+2. For each candidate, silently estimate its typicality: how likely an independent generation for this same topic would be to produce it (high = generic or expected, low = specific or surprising but still on-topic).
+3. Discard the more typical half of the candidates.
+4. From the remaining candidates, choose the final {num_subtopics}, preferring specificity and variety, with no two near-duplicates of each other.
+5. Output only the final {num_subtopics} in the required format, without your brainstorming or scores."""
+
+    @classmethod
+    def augment_subtopic_prompt(
+        cls,
+        prompt: str,
+        num_subtopics: int,
+        existing_topics: list[str] | None = None,
+        max_existing_topics: int = VERBALIZED_SAMPLING_MAX_EXISTING_TOPICS,
+    ) -> str:
+        """Append Verbalized Sampling guidance to a topic-expansion prompt.
+
+        Args:
+            prompt: The topic-expansion prompt built for the configured prompt style.
+            num_subtopics: Number of subtopics the prompt asks for.
+            existing_topics: Topics generated so far, to steer away from duplicates.
+            max_existing_topics: Maximum number of existing topics to list.
+
+        Returns:
+            The augmented prompt.
+        """
+        return (
+            prompt.rstrip()
+            + cls.existing_topics_block(existing_topics or [], max_existing_topics)
+            + cls.subtopic_instructions(num_subtopics)
+        )
+
+    @classmethod
+    def user_question_instructions(cls) -> str:
+        """Instructions for writing a user question/request with Verbalized Sampling.
+
+        Returns:
+            A prompt section describing the method.
+        """
+        return f"""
+
+METHOD -- Verbalized Sampling (use this instead of writing down the first phrasing that comes to mind):
+1. Silently draft about {cls.QUESTION_CANDIDATES} candidate questions for THIS scenario, varying phrasing, register, and how much context is given. Every candidate must stay faithful to the specific people, objects, and actions in the scenario; do not substitute a more familiar or "classic" scenario.
+2. For each candidate, silently estimate its typicality: how likely a generation for a different scenario in the same dataset would produce a similar question by coincidence.
+3. Discard the more typical half of the candidates.
+4. From the rest, choose the one that is most faithful to this specific scenario.
+5. Output only that final question, without your drafts or scores."""
+
+    @classmethod
+    def sample_instructions(cls) -> str:
+        """Instructions for writing a whole training sample with Verbalized Sampling.
+
+        Returns:
+            A prompt section describing the method.
+        """
+        return f"""
+
+METHOD -- Verbalized Sampling (use this instead of writing the first sample that comes to mind):
+1. Silently consider about {cls.QUESTION_CANDIDATES} distinct ways to turn this topic into a user request, varying the situation, phrasing, and level of detail, all faithful to the topic.
+2. For each, silently estimate its typicality: how likely a generation for a different topic in the same dataset would produce a similar request by coincidence.
+3. Discard the more typical half and write the sample from one of the remaining options.
+4. Output only the final sample in the required format."""

@@ -92,6 +92,7 @@ Controls topic tree/graph generation.
 | `degree` | int | 3 | Subtopics per node (1-50) |
 | `max_concurrent` | int | 4 | Max concurrent LLM calls (graph mode only, 1-20) |
 | `prompt_style` | string | "default" | Graph expansion prompt style (graph mode only, see below) |
+| `sampling` | string | "direct" | `direct` or `verbalized` (see [Verbalized Sampling](#verbalized-sampling)) |
 | `system_prompt` | string | "" | Custom instructions for topic LLM |
 | `max_tokens` | int | 1000 | Max tokens for topic generation LLM calls |
 | `save_as` | string | - | Path to save topics JSONL |
@@ -120,6 +121,38 @@ topics:
     Generate adversarial security test cases for AI assistant hardening.
 ```
 
+#### Verbalized Sampling
+
+Large topic graphs and datasets tend to repeat a small set of ideas: asked directly for
+"N subtopics" or "a user question", models favour the most typical answers (mode collapse).
+Setting `sampling: verbalized` switches the prompt to
+[Verbalized Sampling](https://arxiv.org/abs/2510.01171): the model silently brainstorms a
+larger pool of candidates, estimates how typical each one is, discards the more typical
+half, and answers from the remaining tail.
+
+The option is available in two places and is off (`direct`) by default:
+
+| Setting | Applies to | What changes |
+|---------|------------|--------------|
+| `topics.sampling` | Tree and graph expansion (every `prompt_style`) | Each expansion considers about 3× the requested subtopics and is shown the most recent topics already generated in any branch (up to 80), so it avoids repeating them |
+| `generation.sampling` | Sample generation | Agent mode: the user question is drafted from ~5 candidates and must stay faithful to the given scenario. Other modes: the sample is written from one of ~5 less typical framings of the topic |
+
+```yaml title="Example: more diverse topics and samples"
+topics:
+  prompt: "Household budgeting questions"
+  mode: graph
+  depth: 3
+  degree: 6
+  sampling: verbalized
+
+generation:
+  system_prompt: "Generate realistic user requests and helpful answers."
+  sampling: verbalized
+```
+
+Verbalized Sampling makes prompts longer and gives the model more to do per call, so expect
+somewhat higher token usage. It works best with capable instruction-following models.
+
 #### Failed Generation Tracking
 
 When topic generation encounters failures, sidecar files are created automatically:
@@ -145,6 +178,7 @@ Controls sample generation.
 | `max_retries` | int | 3 | Retries on API failures |
 | `sample_retries` | int | 2 | Retries on validation failures |
 | `max_tokens` | int | 2000 | Max tokens per generation |
+| `sampling` | string | "direct" | `direct` or `verbalized` (see [Verbalized Sampling](#verbalized-sampling)) |
 | `output_schema` | object | - | Custom JSON Schema for structured output (see below) |
 | `llm` | object | - | Override shared LLM settings |
 

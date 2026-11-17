@@ -10,16 +10,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .constants import (
     DEFAULT_MAX_TOKENS,
+    DEFAULT_SAMPLING_STRATEGY,
     MAX_RETRY_ATTEMPTS,
     TOPIC_TREE_DEFAULT_DEGREE,
     TOPIC_TREE_DEFAULT_DEPTH,
     TOPIC_TREE_DEFAULT_MODEL,
     TOPIC_TREE_DEFAULT_TEMPERATURE,
+    SamplingStrategy,
 )
 from .exceptions import TreeError
 from .llm import LLMClient
 from .metrics import trace
-from .prompts import TreePromptBuilder
+from .prompts import TreePromptBuilder, VerbalizedSamplingPromptBuilder
 from .schemas import TopicList
 from .stream_simulator import simulate_stream
 from .topic_model import Topic, TopicModel, TopicPath
@@ -94,6 +96,13 @@ class TreeConfig(BaseModel):
         ge=1,
         description="Maximum tokens for topic generation LLM calls",
     )
+    sampling: SamplingStrategy = Field(
+        default=DEFAULT_SAMPLING_STRATEGY,
+        description=(
+            "Topic expansion sampling strategy: 'direct' (default) asks for the result directly; 'verbalized' uses "
+            "Verbalized Sampling (arXiv:2510.01171) to reduce mode collapse and repetition"
+        ),
+    )
 
 
 class TreeValidator:
@@ -161,6 +170,7 @@ class Tree(TopicModel):
         self.model_name = self.config.model_name
         self.max_concurrent = self.config.max_concurrent
         self.max_tokens = self.config.max_tokens
+        self.sampling = self.config.sampling
 
         # Initialize LLM client
         llm_kwargs = {}
@@ -189,6 +199,8 @@ class Tree(TopicModel):
         # Derived attributes
         self.system_prompt = self.config.topic_system_prompt
         self.tree_paths: list[list[str]] = []
+        # Every subtopic generated so far, across all branches (used by verbalized sampling)
+        self.generated_topics: list[str] = []
         self.failed_generations: list[dict[str, Any]] = []
 
     async def build_async(self, model_name: str | None = None):
@@ -306,6 +318,10 @@ class Tree(TopicModel):
             system_prompt=system_prompt if system_prompt else "",
             domain=domain,
         )
+        if self.sampling == "verbalized":
+            prompt = VerbalizedSamplingPromptBuilder.augment_subtopic_prompt(
+                prompt, num_subtopics, existing_topics=self.generated_topics
+            )
 
         try:
             # Always use non-streaming for reliable structured output
@@ -324,10 +340,6 @@ class Tree(TopicModel):
                 source="tree_generation",
             )
 
-            # Extract subtopics — accept whatever the LLM returned
-            subtopics = topic_response.subtopics
-            return subtopics[:num_subtopics]
-
         except Exception as e:
             self.failed_generations.append(
                 {
@@ -337,6 +349,11 @@ class Tree(TopicModel):
                 }
             )
             return []
+        else:
+            # Extract subtopics — accept whatever the LLM returned
+            subtopics = topic_response.subtopics[:num_subtopics]
+            self.generated_topics.extend(subtopics)
+            return subtopics
 
     def _detect_domain(self, system_prompt: str, node_path: list[str]) -> str:
         """Detect the appropriate domain for prompt examples based on context."""
