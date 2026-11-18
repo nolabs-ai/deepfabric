@@ -77,7 +77,7 @@ async def test_prompt_matrix_and_exact_pin(make_engine, kind, persona, path, shi
     assert seed_prompt.count("GENERATION_PERSONA") == (1 if kind == "cot" else 2)
     assert seed_prompt.count("SPECIAL_INSTRUCTIONS") == 2
     assert "Topic/Scenario:" in seed_prompt
-    assert "Generate 1 user request for this topic." in seed_prompt
+    assert "Generate 1 user question." in seed_prompt
     assert 'an "items" list containing only the user-message text strings' in seed_prompt
     assert "Do NOT add assistant messages" in seed_prompt
     if kind == "cot":
@@ -119,9 +119,9 @@ def test_seed_framing_omits_unconfigured_instruction_sections(make_engine, reque
     prompt = engine._build_bulk_collection_prompt({"path": ["ROOT", "TOPIC"]}, requested, [], 0)
     assert prompt.count("GENERATION_PERSONA") == 2
     expected = (
-        "Generate 1 user request for this topic."
+        "Generate 1 user question."
         if requested == 1
-        else f"Generate {requested} diverse user requests for this topic."
+        else f"Generate {requested} diverse user questions."
     )
     assert expected in prompt
     assert "Additional Instructions:" not in prompt
@@ -392,7 +392,7 @@ async def test_agent_prompts_match_independent_except_question_collection_shape(
         question_prompt, _ = unpack(engine.llm_client.generate_async.call_args_list[0])
         if sample_mode == "bulk":
             question_prompt = question_prompt.replace(
-                "Generate 1 user request for this topic.",
+                "Generate 1 short, natural user question for this scenario:",
                 "Generate a short, natural user question for this scenario:",
             ).replace(
                 'Generate only the user questions as an object with an "items" list of strings:',
@@ -416,7 +416,7 @@ async def test_agent_prompts_match_independent_except_question_collection_shape(
 
 
 @pytest.mark.parametrize("kind", ["basic", "cot"])
-@pytest.mark.parametrize("requested", [1, 4])
+@pytest.mark.parametrize("requested", [1, 4, 5])
 def test_agent_bulk_question_prompt_differs_only_in_collection_request_and_output_shape(
     make_engine, kind, requested
 ):
@@ -427,9 +427,9 @@ def test_agent_bulk_question_prompt_differs_only_in_collection_request_and_outpu
     )
     bulk = engine._build_bulk_collection_prompt({"path": path}, requested, [], 0)
     collection_request = (
-        "Generate 1 user request for this topic."
+        "Generate 1 short, natural user question for this scenario:"
         if requested == 1
-        else "Generate 4 diverse user requests for this topic."
+        else f"Generate {requested} diverse, short, natural user questions for this scenario:"
     )
     expected = independent.replace(
         "Generate a short, natural user question for this scenario:",
@@ -440,11 +440,11 @@ def test_agent_bulk_question_prompt_differs_only_in_collection_request_and_outpu
     )
     assert bulk == expected
     assert "Generate 1 short, natural user questions" not in bulk
-    assert ("diverse user requests" in bulk) is (requested > 1)
+    assert ("diverse, short, natural user questions" in bulk) is (requested > 1)
     assert ("You may use 1 to 2 tools" in bulk) is (kind == "cot")
     retry = engine._build_bulk_collection_prompt({"path": path}, 1, ["Already asked"], 0)
     assert "<accepted_siblings>" in retry and "Already asked" in retry
-    assert "Generate 1 user request for this topic." in retry
+    assert "Generate 1 short, natural user question for this scenario:" in retry
 
 
 async def test_independent_agent_question_prompt_preserves_legacy_wrapper(make_engine):

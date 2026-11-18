@@ -1916,10 +1916,14 @@ class DataSetGenerator:
             if not seed_scope
             else "seed"
             if self.config.output_schema is not None
+            else "agent"
+            if self.tool_registry
             else "conversation"
         )
         request = render_template(
-            default_template(f"request_bulk_{kind}_{'single' if num_items == 1 else 'plural'}"),
+            default_template(
+                f"request_bulk_{kind}_{'single' if num_items == 1 else 'plural'}"
+            ).rstrip("\n"),
             {"num_items": num_items, "seed_field": json.dumps(self.config.seed_field)},
         )
         siblings = (

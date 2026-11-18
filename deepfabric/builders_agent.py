@@ -279,8 +279,8 @@ class SingleTurnAgentBuilder(ConversationBuilder):
             collection_request
             or render_template(
                 default_template(
-                    f"request_bulk_conversation_{'single' if num_items == 1 else 'plural'}"
-                ),
+                    f"request_bulk_agent_{'single' if num_items == 1 else 'plural'}"
+                ).rstrip("\n"),
                 {"num_items": num_items},
             )
             if collection
