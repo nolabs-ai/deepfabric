@@ -109,13 +109,21 @@ def open_unique(path: str | Path) -> tuple[Path, TextIO]:
     raise AssertionError("Unreachable")
 
 
-def _publish(path: Path, writer: Callable[[str], None], replace: bool) -> str:
+def _publish(
+    path: Path,
+    writer: Callable[[str], None],
+    replace: bool,
+    replace_if: Callable[[], bool] | None = None,
+) -> str:
     if replace:
         _check_replacement(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".deepfabric-", dir=path.parent) as directory:
         staged = Path(directory) / path.name
         writer(str(staged))
+        # Checked as late as possible: serialization of a large output takes time.
+        if replace and replace_if is not None and not replace_if():
+            replace = False
         if replace:
             os.replace(staged, path)
             return str(path)
@@ -150,16 +158,24 @@ def _remove_owned_partial(path, identity):
         pass
 
 
-def save_output(path: str | Path, writer: Callable[[str], None], *, replace: bool = False) -> str:
+def save_output(
+    path: str | Path,
+    writer: Callable[[str], None],
+    *,
+    replace: bool = False,
+    replace_if: Callable[[], bool] | None = None,
+) -> str:
     """Publish once; on filesystem failure try one application-data recovery save.
 
     Recovery success still raises OutputSaveError: it is not success at the
     requested destination. Serialization exceptions are not filesystem failures,
     and neither is a replacement alias: it propagates without a recovery attempt.
+    With replace, an optional replace_if is called just before replacing; if it
+    returns False the output is saved under a new filename instead.
     """
     target = Path(path).expanduser()
     try:
-        actual = _publish(target, writer, replace)
+        actual = _publish(target, writer, replace, replace_if)
     except ReplacementAliasError:
         raise
     except OSError as error:

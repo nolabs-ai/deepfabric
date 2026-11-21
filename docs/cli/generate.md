@@ -421,8 +421,31 @@ dataset output prompts you to choose:
 When saving under a new `filename.json`, DeepFabric tries `filename.json`, then
 `filename_1.json`, `filename_2.json`, and so on until an unused name is available.
 The exact name is chosen at save time, so a new clash during generation also gets
-a suffix. A validated `--retry-failed` run instead replaces the selected dataset
-after its updated export succeeds, with a terminal notice.
+a suffix. A run that resumes or retries a checkpoint instead replaces the dataset
+file that the checkpoint's earlier run exported (which may be the numbered name),
+after its updated export succeeds, with a terminal notice. This applies only while
+that file is unchanged: the checkpoint records its size and SHA-256, and the check
+is repeated just before saving. If the file has changed or no longer exists, if no
+export was recorded, or if you select a different dataset output, the run saves
+under a new filename or shows the usual prompt instead. A default run report then
+follows the dataset's actual filename, for example `dataset_1.report.json`.
+
+For unattended runs such as CI, `--overwrite` answers the topic and dataset
+prompts by replacing the existing file. Each file is replaced only once its new
+version is saved successfully. Topics are saved before dataset generation starts,
+so a run that fails later has already replaced the topic file but leaves the
+existing dataset in place. A run stopped with Ctrl+C saves its partial dataset
+under a new filename instead. A symbolic link at the output path is replaced by
+the new file; the file it pointed to is left unchanged. A directory or other
+non-file at the output path is never replaced; the run saves under a new
+filename. Like clearing, `--overwrite` leaves existing run reports and prompt
+traces unchanged, so their new files receive numeric suffixes, and it does not
+answer checkpoint prompts. To reuse existing topics
+instead of generating them again, pass them with `--topics-load`:
+
+```bash
+deepfabric generate config.yaml --topics-load topics.jsonl --overwrite
+```
 
 Report and prompt-trace clashes are resolved automatically without a prompt.
 Clearing a topic or dataset output leaves existing reports and prompt traces

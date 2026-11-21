@@ -1,9 +1,11 @@
 import asyncio
+import hashlib
 import json
 import logging
 import math
 import os
 import random
+import time
 
 from collections import Counter, deque
 from collections.abc import AsyncGenerator
@@ -31,6 +33,7 @@ from .bulk import (
 from .checkpoint import iter_jsonl, read_jsonl, validate_checkpoint, version_error
 from .config import _normalize_reasoning_style
 from .constants import (
+    ACCOUNTING_PERSIST_INTERVAL_SECONDS,
     API_ERROR_INDICATORS,
     CHECKPOINT_VERSION,
     DEFAULT_MAX_RETRIES,
@@ -88,6 +91,17 @@ if TYPE_CHECKING:
     from .topic_model import TopicModel
 
 logger = logging.getLogger(__name__)
+
+
+def export_fingerprint(path: str | Path) -> dict:
+    """Return the size and SHA-256 of a dataset export, so it can be recognised later."""
+    digest = hashlib.sha256()
+    size = 0
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return {"size": size, "sha256": digest.hexdigest()}
 
 
 class DataSetGeneratorConfig(TopicSamplingConfig):
@@ -340,6 +354,8 @@ class DataSetGenerator:
         self._loaded_accounting = None
         self._legacy_accounting = False
         self._accounting_persistence_failed = False
+        self._accounting_saved_at = float("-inf")
+        self._dataset_export: dict[str, str] | None = None
         self._completed: set[tuple[str, int]] = set()  # Attempted (UUID, sample ordinal) slots
         self._sample_slots: list[tuple[str, int]] = []
         self._generation_plan: dict | None = None
@@ -560,6 +576,8 @@ class DataSetGenerator:
             ),
         }
 
+        if self._dataset_export is not None:
+            metadata["dataset_export"] = self._dataset_export
         if self._accounting is not None:
             metadata["token_accounting"] = self._accounting.snapshot()
         elif self._loaded_accounting is not None:
@@ -588,16 +606,28 @@ class DataSetGenerator:
                 temporary_path = Path(stream.name)
                 json.dump(metadata, stream, indent=2)
             os.replace(temporary_path, self._checkpoint_metadata_path)
+            self._accounting_saved_at = time.monotonic()
         finally:
             if temporary_path is not None:
                 with suppress(OSError):
                     temporary_path.unlink(missing_ok=True)
 
     def _persist_accounting(self, status=None) -> None:
-        """Change only accounting in the last durable sample metadata."""
+        """Change only accounting in the last durable sample metadata.
+
+        Called after every LLM response. Rewriting the whole metadata file each
+        time grows with run size, so per-response writes are throttled; the
+        final call (with a status) always writes.
+        """
         with self._checkpoint_lock:
             self._accounting.refresh(status)
             if self._checkpoint_metadata_path is None:
+                return
+            if (
+                status is None
+                and time.monotonic() - self._accounting_saved_at
+                < ACCOUNTING_PERSIST_INTERVAL_SECONDS
+            ):
                 return
             try:
                 with self._checkpoint_metadata_path.open(encoding="utf-8") as stream:
@@ -612,6 +642,39 @@ class DataSetGenerator:
                 logger.exception(
                     "Could not persist observed token usage; sample checkpoint retained"
                 )
+
+    def record_dataset_export(self, requested: str, saved: str) -> None:
+        """Remember which file this run exported, so a retry replaces only that file.
+
+        The saved file's size and SHA-256 are recorded too, so a file that another
+        run or the user has since written at that path is not mistaken for this
+        export.
+
+        Args:
+            requested: The configured dataset path the export was asked to use.
+            saved: The path actually written (a numbered name after a collision).
+        """
+        with self._checkpoint_lock:
+            if (
+                self._checkpoint_metadata_path is None
+                or not self._checkpoint_metadata_path.exists()
+            ):
+                return
+            saved_path = Path(saved).expanduser().resolve()
+            self._dataset_export = {
+                "requested": str(Path(requested).expanduser().resolve()),
+                "saved": str(saved_path),
+                **export_fingerprint(saved_path),
+            }
+            with self._checkpoint_metadata_path.open(encoding="utf-8") as stream:
+                metadata = json.load(stream)
+            metadata["dataset_export"] = self._dataset_export
+            self._write_checkpoint_metadata(metadata)
+
+    @property
+    def dataset_export(self) -> dict[str, str] | None:
+        """The export recorded in a loaded checkpoint, if any."""
+        return self._dataset_export
 
     def _validate_checkpoint_compatibility(self, metadata: dict) -> None:
         """Validate that current config is compatible with checkpoint.
@@ -734,6 +797,15 @@ class DataSetGenerator:
         self._flushed_failures_count = len(failures)
         self._topic_seeds = metadata.get("seeds", {})
         self._collection_attempts = metadata.get("collection_attempts", {})
+        export = metadata.get("dataset_export")
+        # A malformed record is ignored: a retry then prompts instead of replacing.
+        self._dataset_export = (
+            export
+            if isinstance(export, dict)
+            and all(isinstance(export.get(key), str) for key in ("requested", "saved", "sha256"))
+            and type(export.get("size")) is int
+            else None
+        )
         self._checkpoint_modes_changed = any(
             metadata.get(name, default) != getattr(self.config, name)
             for name, default in (
@@ -807,6 +879,7 @@ class DataSetGenerator:
         self._generation_plan = None
         self._topic_seeds.clear()
         self._collection_attempts.clear()
+        self._dataset_export = None
         self._checkpoint_loaded = False
         self._loaded_accounting = None
         self._legacy_accounting = False
@@ -1581,7 +1654,9 @@ class DataSetGenerator:
                     try:
                         event = await anext(events)
                     except StopAsyncIteration:
-                        completed = not self.stop_requested and not self.get_all_failures()
+                        # Failed samples still had their usage observed; only a stop leaves
+                        # requests whose usage may be unrecorded.
+                        completed = not self.stop_requested
                         break
                 yield event
         finally:
@@ -1646,6 +1721,7 @@ class DataSetGenerator:
             self._sample_slots.clear()
             self._topic_seeds.clear()
             self._collection_attempts.clear()
+            self._dataset_export = None
             self._flushed_samples_count = 0
             self._flushed_failures_count = 0
             self.stop_requested = False
@@ -2114,6 +2190,8 @@ class DataSetGenerator:
             # Reserve an attempt durably before the request, including interrupted calls.
             await self._checkpoint_topic_state(queue, topic_id, attempts=attempts)
             if self.stop_requested:
+                # Stopped before sending: release the reservation, since no request was made.
+                await self._checkpoint_topic_state(queue, topic_id, attempts=attempts - 1)
                 return
             prompt = self._build_bulk_collection_prompt(
                 allocation, requested, accepted_siblings, num_example_demonstrations

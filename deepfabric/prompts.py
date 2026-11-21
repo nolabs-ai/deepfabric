@@ -1,6 +1,6 @@
 from string import Template
 
-from .prompt_templates import compatibility_template, default_template
+from .prompt_templates import compatibility_template, default_template, render_template
 
 SEQUENTIAL_SAMPLE_PROMPT = compatibility_template("sequential_sample", "format")
 
@@ -114,11 +114,14 @@ class TreePromptBuilder:
         path_str = " -> ".join(f'"{topic}"' for topic in topic_path)
         examples = cls._format_examples(cls.EXAMPLES.get(domain, cls.EXAMPLES["general"]))
 
-        return Template(default_template("tree_expansion")).substitute(
-            num_subtopics=num_subtopics,
-            examples=examples,
-            system_prompt=system_prompt,
-            path_str=path_str,
+        return render_template(
+            default_template("tree_expansion"),
+            {
+                "num_subtopics": num_subtopics,
+                "examples": examples,
+                "system_prompt": system_prompt,
+                "topic_path": path_str,
+            },
         )
 
     @classmethod
@@ -250,11 +253,14 @@ class GraphPromptBuilder:
         path_str = " -> ".join(f'"{topic}"' for topic in topic_path)
         examples = cls._format_examples(cls.EXAMPLES.get(domain, cls.EXAMPLES["technical"]))
 
-        return Template(default_template("graph_anchored")).substitute(
-            num_subtopics=num_subtopics,
-            examples=examples,
-            system_prompt=system_prompt,
-            path_str=path_str,
+        return render_template(
+            default_template("graph_anchored"),
+            {
+                "num_subtopics": num_subtopics,
+                "examples": examples,
+                "system_prompt": system_prompt,
+                "topic_path": path_str,
+            },
         )
 
     @classmethod

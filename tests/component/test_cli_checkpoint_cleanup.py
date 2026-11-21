@@ -32,6 +32,9 @@ class FakeEngine:
     def clear_checkpoint(self):
         self.cleared = True
 
+    def record_dataset_export(self, requested, saved):
+        pass
+
 
 def config_file(tmp_path):
     path = tmp_path / "config.yaml"

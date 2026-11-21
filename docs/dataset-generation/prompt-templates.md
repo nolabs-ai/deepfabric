@@ -57,6 +57,10 @@ An omitted override retains the built-in template selected for that mode and
 output format. An override replaces that step's framing; include the context
 and history placeholders you want the model to receive. The response schema,
 seed pinning, validation, retries and output assembly remain controlled by code.
+An override for a step the configured mode never uses (for example `seed` in
+independent mode, `completion` for tool conversations, or `agent_step` without
+tools or with `output_schema`) is ignored, and loading the configuration warns
+which overrides are unused.
 
 For sequential sampling, the first sample uses `full_sample`. Later samples
 use `sequential_later`, falling back to `full_sample`, then the built-in prompt.
@@ -128,8 +132,8 @@ Omitting either key preserves its existing prompt. These defaults are assembled
 in the agent builder; `default_prompt` exposes the complete default for that call,
 including any retry notice. Overrides change prompt text only: `AgentStep` and
 `AgentResponse` response schemas, tool execution, retry budgets, pinned requests,
-and dataset assembly stay the same. Template files are snapshotted and included
-in provenance reports just like other generation templates. Dry-run previews
+and dataset assembly stay the same. Template files are snapshotted and identified
+by SHA-256 and path in run reports just like other generation templates. Dry-run previews
 show both stages with representative action/result data.
 
 ### Tool-agent fields
@@ -381,9 +385,9 @@ uv run deepfabric generate config.yaml --topic-only --dry-run --trace-prompt --v
 ```
 
 `--verbose` includes a deeper expansion when depth is greater than one.
-`--topics-load` skips topic generation and its templates. Run reports save
-resolved topic overrides under `topic_prompt_templates` alongside
-sample-template metadata.
+`--topics-load` skips topic generation and its templates. Run reports record
+the SHA-256 and file path of topic overrides under `topic_prompt_templates`
+alongside sample-template metadata.
 
 ## Inspect and reproduce
 
@@ -394,8 +398,8 @@ uv run deepfabric generate config.yaml --topics-load topics.json --dry-run --tra
 Use a fresh trace filename because tracing appends. Preview and real generation
 use the same template selection and rendering. Tracing records final requests,
 including role-bearing messages at boundaries that use message lists. Enable
-`--run-report` to save resolved overrides and content hashes for both overrides
-and built-in template assets; a config hash alone cannot capture file edits.
+`--run-report` to save content hashes (and file paths) for overrides and built-in
+template assets, without their text; a config hash alone cannot capture file edits.
 Keep the YAML, template files, topic graph and code revision with each experiment.
 Resume warns if resolved templates differ from the checkpoint; use separate
 outputs and checkpoints for different template variants.

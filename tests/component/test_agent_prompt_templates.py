@@ -1,6 +1,7 @@
 """Agent-stage overrides reach actual provider calls without changing tool execution."""
 # ruff: noqa: PLR2004, ARG001
 
+import hashlib
 import json
 
 import pytest
@@ -77,6 +78,9 @@ def test_agent_sources_validate_snapshot_and_report(tmp_path, stage):
     )
     path.write_text("changed", encoding="utf-8")
     assert getattr(config, stage).content == text
-    assert template_manifest(config)["overrides"][stage]["text"] == text
+    assert (
+        template_manifest(config)["overrides"][stage]["sha256"]
+        == hashlib.sha256(text.encode()).hexdigest()
+    )
     with pytest.raises(ValueError, match="Unknown or unavailable"):
         GenerationPromptTemplates.model_validate({stage: "{{ typo }}"})

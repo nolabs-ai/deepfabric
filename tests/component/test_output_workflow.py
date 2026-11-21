@@ -281,14 +281,17 @@ def build_retry_state(workflow, tmp_path):
 
 
 @pytest.mark.parametrize("explicit_resume", [False, True])
-def test_real_retry_replaces_selected_override_without_dataset_prompt(
-    workflow, tmp_path, explicit_resume
+@pytest.mark.parametrize("own_export", [True, False])
+def test_real_retry_replaces_only_its_own_export_without_dataset_prompt(
+    workflow, tmp_path, explicit_resume, own_export
 ):
     engine, calls, _dataset = build_retry_state(workflow, tmp_path)
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump(workflow.config.model_dump(exclude_unset=True)))
     target = tmp_path / "override.jsonl"
     target.write_text("old dataset")
+    if own_export:  # the checkpoint's earlier run exported to this file
+        engine.record_dataset_export(str(target), str(target))
     report = tmp_path / "report.json"
     report.write_text("old report")
     trace = tmp_path / "trace.jsonl"
@@ -323,10 +326,15 @@ def test_real_retry_replaces_selected_override_without_dataset_prompt(
     ):
         result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
-    assert len(target.read_text().splitlines()) == 2
-    assert not target.with_name("override_1.jsonl").exists()
-    assert "will be replaced only after a successful save" in " ".join(result.output.split())
-    assert prompt.call_count == 0
+    if own_export:
+        assert len(target.read_text().splitlines()) == 2
+        assert not target.with_name("override_1.jsonl").exists()
+        assert "will be replaced only after a successful save" in " ".join(result.output.split())
+        assert prompt.call_count == 0
+    else:  # an unrelated existing file gets the collision prompt; default keeps it
+        assert target.read_text() == "old dataset"
+        assert len(target.with_name("override_1.jsonl").read_text().splitlines()) == 2
+        assert prompt.call_count == 1
     assert construct.call_count == load.call_count == 1
     assert len(calls) == 3  # Two original requests, one reopened failed slot.
     assert report.read_text() == "old report"

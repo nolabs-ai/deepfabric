@@ -5,7 +5,7 @@ import math
 import os
 import traceback
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -815,6 +815,7 @@ def save_dataset(
     failures_path: str | None = None,
     *,
     replace: bool = False,
+    replace_if: Callable[[], bool] | None = None,
 ) -> DatasetSaveResult:
     """
     Save dataset to file.
@@ -826,6 +827,8 @@ def save_dataset(
         engine: Optional DataSetGenerator to save failed samples from
         failures_path: Optional explicit path for failures file (overrides auto-generated path)
         replace: Replace the dataset only after successful serialization.
+        replace_if: With replace, checked just before replacing; False saves under a
+            new filename instead.
 
     Returns:
         Actual dataset and optional failure-export paths; collisions may add suffixes.
@@ -840,7 +843,10 @@ def save_dataset(
         # HuggingFace Dataset's Arrow schema adds null for missing fields across rows,
         # but we want clean output without null values for optional fields
         save_path = save_output(
-            save_path, lambda path: _save_jsonl_without_nulls(dataset, path), replace=replace
+            save_path,
+            lambda path: _save_jsonl_without_nulls(dataset, path),
+            replace=replace,
+            replace_if=replace_if,
         )
         tui.success(f"Dataset saved to: {save_path}")
 

@@ -1,6 +1,7 @@
 """Topic template selection and final requests, without provider calls."""
 # ruff: noqa: PLR2004
 
+import hashlib
 import json
 
 from unittest.mock import AsyncMock, patch
@@ -16,9 +17,17 @@ from deepfabric.config import DeepFabricConfig, TopicsConfig
 from deepfabric.exceptions import TreeError
 from deepfabric.graph import Graph
 from deepfabric.llm.prompt_trace import PromptPreviewCaptured, prompt_tracing
-from deepfabric.prompt_templates import TopicPromptTemplates, template_manifest
+from deepfabric.prompt_templates import (
+    TopicPromptTemplates,
+    default_template,
+    template_manifest,
+)
 from deepfabric.schemas import TopicList
 from deepfabric.tree import Tree
+
+
+def sha256(text):
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 @pytest.mark.parametrize("constructor,module", [(Tree, "tree"), (Graph, "graph")])
@@ -152,7 +161,8 @@ def test_yaml_relative_files_are_snapshotted_and_reported(tmp_path):
     assert source.content == "First {{ topic_prompt }}"
     assert source.file == str(file)
     manifest = template_manifest(params["prompt_templates"])
-    assert manifest["overrides"]["initial"]["text"] == source.content
+    assert manifest["overrides"]["initial"]["sha256"] == sha256(source.content)
+    assert "text" not in manifest["overrides"]["initial"]  # Prompt text only via --trace-prompt.
     with pytest.raises(ValidationError, match="Unknown or unavailable"):
         TopicsConfig(prompt="Root", prompt_templates={"expansion": "{{ seed }}"})
 
@@ -264,6 +274,24 @@ def test_run_report_saves_resolved_topic_templates_before_midrun_edits(tmp_path)
         result = CliRunner().invoke(cli, ["generate", str(config), "--run-report", str(report)])
     assert result.exit_code == 0, result.output
     overrides = json.loads(report.read_text())["topic_prompt_templates"]["overrides"]
-    assert overrides["initial"]["text"] == "ORIGINAL {{ topic_path }}"
+    assert overrides["initial"]["sha256"] == sha256("ORIGINAL {{ topic_path }}")
     assert overrides["expansion"]["sha256"] == overrides["initial"]["sha256"]
     assert overrides["initial"]["file"] == str(source)
+
+
+@pytest.mark.parametrize("name", ["tree_expansion", "graph_anchored"])
+def test_copied_builtin_topic_template_fills_every_placeholder(name):
+    """The docs say to copy a built-in template; the copy must render its topic path."""
+    templates = TopicPromptTemplates(expansion=default_template(name))
+    prompt = templates.render(
+        initial=False,
+        default_prompt="unused",
+        system_prompt="SYSTEM",
+        topic_path="Root -> Child",
+        num_subtopics=3,
+        examples="EXAMPLES",
+    )
+    assert "Topic path: Root -> Child" in prompt
+    assert "Generate 3 subtopics" in prompt
+    assert "${" not in prompt
+    assert "{{" not in prompt

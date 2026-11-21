@@ -6,6 +6,7 @@ import pytest
 
 from deepfabric.config import DeepFabricConfig, GenerationConfig
 from deepfabric.generator import DataSetGeneratorConfig
+from deepfabric.topic_sampling import TopicSamplingConfig
 
 SCHEMA = {
     "type": "object",
@@ -232,3 +233,111 @@ def test_yaml_bulk_token_override(tmp_path):
     direct = DataSetGeneratorConfig(**config.get_generation_params())
     assert direct.max_tokens == 400  # noqa: PLR2004
     assert direct.bulk.max_tokens_per_call == 1200  # noqa: PLR2004
+
+
+AGENT = ["agent_step", "agent_response"]
+EVERY_STEP = ("full_sample", "sequential_later", "seed", "completion", *AGENT)
+# A placeholder every stage accepts, so only usage (not validation) differs.
+ANY_STAGE = "{{ dataset_system_prompt }}"
+
+
+@pytest.mark.parametrize(
+    ("options", "unused"),
+    [
+        ({}, ["sequential_later", "seed", "completion", *AGENT]),
+        ({"topic_sample_mode": "sequential"}, ["seed", "completion", *AGENT]),
+        ({"topic_sample_mode": "bulk"}, ["full_sample", "sequential_later", *AGENT]),
+        (
+            {"topic_sample_mode": "bulk", "shared_scope": "full"},
+            ["sequential_later", "seed", "completion", *AGENT],
+        ),
+    ],
+)
+def test_unused_prompt_templates_warn(make_config, options, unused):
+    with pytest.warns(UserWarning, match="not used by this configuration") as caught:
+        make_config(prompt_templates=dict.fromkeys(EVERY_STEP, ANY_STAGE), **options)
+    listed = str(caught[0].message).split("ignored: ")[1].split(" (")[0].split(", ")
+    assert listed == [f"prompt_templates.{step}" for step in unused]
+
+
+def test_used_prompt_templates_do_not_warn(make_config):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        make_config(
+            topic_sample_mode="sequential",
+            prompt_templates={"full_sample": ANY_STAGE, "sequential_later": ANY_STAGE},
+        )
+        make_config(prompt_template=ANY_STAGE)
+
+
+def test_prompt_template_shorthand_is_unused_in_bulk_seed(make_config):
+    with pytest.warns(UserWarning, match=r"ignored: prompt_template \("):
+        make_config(topic_sample_mode="bulk", prompt_template=ANY_STAGE)
+
+
+def test_tool_runs_use_agent_stages_not_completion():
+    config = TopicSamplingConfig(
+        topic_sample_mode="bulk",
+        prompt_templates=dict.fromkeys(("seed", "completion", "agent_step"), ANY_STAGE),
+    )
+    assert config._unused_prompt_templates(has_tools=True) == ["prompt_templates.completion"]
+    assert config._unused_prompt_templates(has_tools=False) == ["prompt_templates.agent_step"]
+
+
+@pytest.mark.parametrize("has_tools", [False, True])
+def test_custom_schema_completes_seeds_and_bypasses_the_agent(has_tools):
+    """With output_schema, bulk/seed renders completion and no mode runs the tool agent."""
+    config = TopicSamplingConfig(
+        topic_sample_mode="bulk",
+        seed_field="name",
+        prompt_templates=dict.fromkeys(("seed", "completion", *AGENT), ANY_STAGE),
+    )
+    assert config._unused_prompt_templates(has_tools=has_tools, output_schema=SCHEMA) == [
+        f"prompt_templates.{step}" for step in AGENT
+    ]
+
+
+def test_tools_block_without_tools_counts_as_no_tools():
+    """Matches the generator: spin_endpoint alone configures no tools."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        GenerationConfig(
+            system_prompt="Persona",
+            topic_sample_mode="bulk",
+            tools={"spin_endpoint": "http://localhost:3000"},
+            prompt_templates={"seed": ANY_STAGE, "completion": ANY_STAGE},
+        )
+
+
+def test_seed_only_schema_never_renders_completion():
+    """The seed is the whole record, so seed completion is skipped."""
+    config = TopicSamplingConfig(
+        topic_sample_mode="bulk",
+        seed_field="name",
+        prompt_templates={"seed": ANY_STAGE, "completion": ANY_STAGE},
+    )
+    seed_only = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+    assert config._unused_prompt_templates(has_tools=False, output_schema=seed_only) == [
+        "prompt_templates.completion"
+    ]
+    assert config._unused_prompt_templates(has_tools=False, output_schema=SCHEMA) == []
+
+
+def test_both_config_layers_report_the_same_tools_value():
+    """Identical messages let Python show the CLI warning once."""
+    options = {
+        "topic_sample_mode": "bulk",
+        "prompt_templates": {"full_sample": ANY_STAGE},
+    }
+    with pytest.warns(UserWarning) as yaml_layer:
+        GenerationConfig(system_prompt="Persona", tools={"tools_endpoint": "http://x"}, **options)
+    with pytest.warns(UserWarning) as generator_layer:
+        DataSetGeneratorConfig(
+            generation_system_prompt="Persona",
+            provider="openai",
+            model_name="test",
+            tools_endpoint="http://x",
+            **options,
+        )
+    assert str(yaml_layer[0].message) == str(generator_layer[0].message)
+    assert "tools=no" in str(yaml_layer[0].message)

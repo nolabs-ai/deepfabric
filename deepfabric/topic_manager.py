@@ -353,7 +353,7 @@ def save_topic_model(
                     for failure in failures:
                         stream.write(json.dumps({"failed_generation": failure}) + "\n")
 
-            failed_path = save_output(sidecar, write_failures)
+            failed_path = save_output(sidecar, write_failures, replace=replace)
             tui.warning(f"Failed generations saved to: {failed_path}")
     except OSError as error:
         raise ConfigurationError(f"Error saving topics: {error}") from error

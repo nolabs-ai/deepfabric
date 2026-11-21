@@ -88,6 +88,9 @@ CHECKPOINT_METADATA_SUFFIX = ".checkpoint.json"
 CHECKPOINT_SAMPLES_SUFFIX = ".checkpoint.jsonl"
 CHECKPOINT_FAILURES_SUFFIX = ".checkpoint.failures.jsonl"
 CHECKPOINT_VERSION = 5  # v5: exact allocation plan and per-sample ordinal tracking
+# Minimum seconds between accounting-only metadata rewrites. Sample checkpoint
+# flushes and the end of a run always write the latest usage.
+ACCOUNTING_PERSIST_INTERVAL_SECONDS = 5.0
 # Pragmatic early warning for growing prompt cost: roughly 12k-17k tokens for
 # typical English, with substantial variation by language/content. Agreed as an
 # initial heuristic, not benchmark-derived or a model context limit; never trims.

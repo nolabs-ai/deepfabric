@@ -682,3 +682,29 @@ async def test_seed_collection_and_completion_have_separate_token_budgets(
     assert len(collection_steps) == 2
     assert "completions separately capped at 200 per call" in collection_steps[0].args[0]
     assert ("calculated as 200 x 3" in collection_steps[0].args[0]) is (override is None)
+
+
+async def test_stop_before_collection_request_does_not_use_an_attempt(make_engine):
+    """A graceful stop between reserving an attempt and sending it must not spend it."""
+    first = make_engine(sample_retries=0)
+    script(first)
+    reserve = first._checkpoint_topic_state
+
+    async def stop_after_reserving(queue, topic_id, **kwargs):
+        await reserve(queue, topic_id, **kwargs)
+        if kwargs.get("attempts") == 1:
+            first.stop_requested = True
+
+    with patch.object(first, "_checkpoint_topic_state", side_effect=stop_after_reserving):
+        await run(first, 3)
+    assert first.llm_client.generate_async.call_count == 0
+    metadata = json.loads(first._checkpoint_metadata_path.read_text())
+    assert metadata["collection_attempts"] == {"topic-0": 0}
+
+    resumed = make_engine(sample_retries=0)
+    assert resumed.load_checkpoint()
+    script(resumed, {"items": ["a", "b", "c"]}, {"price": 1}, {"price": 2}, {"price": 3})
+    _, dataset = await run(resumed, 3)
+    assert len(seed_calls(resumed)) == 1
+    assert len(dataset) == 3
+    assert not resumed.get_all_failures()

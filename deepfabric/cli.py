@@ -9,6 +9,7 @@ import sys
 import time
 
 from pathlib import Path
+from stat import S_ISREG
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ from .constants import (
 )
 from .dataset_manager import create_dataset, resolve_num_samples, save_dataset
 from .exceptions import ConfigurationError, DataSetGeneratorError
-from .generator import DataSetGenerator
+from .generator import DataSetGenerator, export_fingerprint
 from .graph import Graph
 from .llm import VerificationStatus, verify_provider_api_key
 from .llm.prompt_trace import get_prompt_trace, prompt_tracing
@@ -183,6 +184,9 @@ class GenerateOptions(BaseModel):
     prepared_engine: DataSetGenerator | None = None
     prepared_topics: TopicModel | None = None
     replace_retry_output: bool = False
+    overwrite: bool = False
+    replace_topics_output: bool = False
+    replace_dataset_output: bool = False
     trace_prompt: bool = False
     trace_prompt_file: str | None = None
     verbose: bool = False
@@ -415,6 +419,7 @@ def _initialize_topic_model(
             topic_model=topic_model,
             config=preparation.config,
             topics_save_as=options.topics_save_as,
+            replace=options.replace_topics_output,
         )
         options.topics_save_as = actual
 
@@ -533,13 +538,23 @@ def _show_existing_path(kind: str, path: str | Path) -> None:
         )
 
 
-def _collision_choice(path: str, *, topics: bool = False, continuing: bool = False) -> str:
+def _collision_choice(
+    path: str, *, topics: bool = False, continuing: bool = False, overwrite: bool = False
+) -> str:
     """Collect collision policy without creating files or probing write access."""
     target = Path(path).expanduser()
     if not target.exists() and not target.is_symlink():
         return "unique"
     tui = get_tui()
     _show_existing_path("topic output" if topics else "dataset output", path)
+    if overwrite:
+        if target.is_symlink() or target.is_file():
+            # Replaced atomically on save, so a failed run leaves the existing file intact.
+            tui.info(f"--overwrite: {path} will be replaced after a successful save")
+            return "replace"
+        # A directory or special file cannot be replaced by a file; fail before any work.
+        tui.warning(f"--overwrite: {path} is not a regular file; saving under a new filename")
+        return "unique"
     tui.console.print("  1) Save this run under a new filename")
     label = "Clear output and continue" if continuing else "Clear and start fresh"
     tui.console.print(f"  2) {label} (delete after all choices are confirmed)")
@@ -661,22 +676,30 @@ def _prepare_output_destinations(preparation, options) -> str:
                 _prepare_retry_checkpoint(preparation, options, directory)
 
     if not options.topics_load:
-        choice = _collision_choice(topic_path, topics=True, continuing=options.resume)
+        choice = _collision_choice(
+            topic_path, topics=True, continuing=options.resume, overwrite=options.overwrite
+        )
         if choice == "clear":
             deletions.append(Path(topic_path))
         elif choice == "load":
             options.topics_load = topic_path
+        elif choice == "replace":
+            options.replace_topics_output = True
     continuing = options.resume or bool(options.topics_load)
-    if options.retry_failed and engine is not None:
+    retry_target = _retry_export_target(engine, dataset_path) if options.resume else None
+    if retry_target is not None:
         options.replace_retry_output = True
+        options.output_save_as = dataset_path = retry_target
         get_tui().info(
-            "Retrying checkpoint failures: selected dataset output will be replaced "
-            "only after a successful save: " + str(dataset_path)
+            "Continuing checkpoint: this run's earlier export will be replaced "
+            "only after a successful save: " + retry_target
         )
-    elif (
-        not options.topic_only and _collision_choice(dataset_path, continuing=continuing) == "clear"
-    ):
-        deletions.append(Path(dataset_path))
+    elif not options.topic_only:
+        choice = _collision_choice(dataset_path, continuing=continuing, overwrite=options.overwrite)
+        if choice == "clear":
+            deletions.append(Path(dataset_path))
+        elif choice == "replace":
+            options.replace_dataset_output = True
     _check_output_aliases(options, topic_path, dataset_path, directory, stem)
     inputs = [path for path in (options.config_file, options.topics_load) if path]
     for target in deletions:
@@ -693,6 +716,28 @@ def _prepare_output_destinations(preparation, options) -> str:
     if options.retry_failed and engine is not None:
         engine.retry_checkpoint_failures()
     return directory
+
+
+def _retry_export_target(engine, dataset_path: str) -> str | None:
+    """Return the file a retry may replace: only one this checkpoint's run exported.
+
+    A collision may have saved the earlier export under a numbered name, leaving the
+    configured path holding unrelated data. Anything else goes through the
+    collision prompt, including a file at the recorded path that has changed since.
+    """
+    export = engine.dataset_export if engine is not None else None
+    if not export:
+        return None
+    try:
+        stat = Path(export["saved"]).stat()
+        if not S_ISREG(stat.st_mode) or stat.st_size != export["size"]:
+            return None
+        if export_fingerprint(export["saved"])["sha256"] != export["sha256"]:
+            return None
+    except (OSError, ValueError):
+        return None
+    selected = str(Path(dataset_path).expanduser().resolve())
+    return export["saved"] if selected in (export["requested"], export["saved"]) else None
 
 
 def _unloadable_checkpoint_choice(metadata_path: Path, exc: Exception) -> None:
@@ -892,6 +937,7 @@ def _run_generation(
 
     output_config = preparation.config.get_output_config()
     output_save_path = options.output_save_as or output_config["save_as"]
+    requested_save_path = output_save_path
 
     # If gracefully stopped, handle based on checkpoint availability
     if engine.stop_requested:
@@ -906,6 +952,7 @@ def _run_generation(
                 output_save_path,
                 preparation.config,
                 engine=engine,
+                # Partial results never replace an existing dataset under --overwrite.
                 replace=options.replace_retry_output,
             )
             output_save_path = saved.dataset_path
@@ -915,13 +962,24 @@ def _run_generation(
             tui.warning("No samples were generated before stop")
         return
 
+    still_own_export = []
+
+    def replace_if() -> bool:
+        # Checked again just before replacing: generation may have taken hours.
+        still_own_export.append(_retry_export_target(engine, output_save_path) is not None)
+        return still_own_export[-1]
+
     saved = save_dataset(
         dataset,
         output_save_path,
         preparation.config,
         engine=engine,
-        replace=options.replace_retry_output,
+        replace=options.replace_retry_output or options.replace_dataset_output,
+        # Only a retry's replacement depends on the file still being its own export.
+        replace_if=replace_if if options.replace_retry_output else None,
     )
+    if still_own_export == [False]:
+        tui.warning(f"{output_save_path} changed during this run; saved under a new filename")
     output_save_path = saved.dataset_path
     options.output_save_as = output_save_path
     record_event("dataset_saved", path=output_save_path, rows=len(dataset))
@@ -931,6 +989,15 @@ def _run_generation(
     if generation_params.get("checkpoint_interval") is not None:
         failure_count = len(engine.get_all_failures())
         if failure_count:
+            # A retry keeps the original requested path so later retries still match it.
+            previous = engine.dataset_export if options.replace_retry_output else None
+            try:
+                engine.record_dataset_export(
+                    previous["requested"] if previous else requested_save_path, output_save_path
+                )
+            except Exception as exc:  # noqa: BLE001 - the dataset is already saved
+                # Without the record a later retry just prompts, which is the safe direction.
+                tui.warning(f"Could not record the dataset export in the checkpoint: {exc}")
             samples = "sample" if failure_count == 1 else "samples"
             tui.warning(
                 f"{failure_count} {samples} failed; keeping checkpoint files in "
@@ -1101,6 +1168,11 @@ def _display_token_usage(report: dict) -> None:
     is_flag=True,
     help="Resume an existing checkpoint and retry failed samples as well as outstanding slots",
 )
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Replace existing topic and dataset outputs without prompting, after a successful save",
+)
 @click.option("--trace-prompt", is_flag=True, help="Record prompts to a JSONL file.")
 @click.option(
     "--trace-prompt-file",
@@ -1152,6 +1224,7 @@ def generate(  # noqa: PLR0913
     checkpoint_path: str | None = None,
     resume: bool = False,
     retry_failed: bool = False,
+    overwrite: bool = False,
     trace_prompt: bool = False,
     trace_prompt_file: str | None = None,
     verbose: bool = False,
@@ -1237,6 +1310,7 @@ def generate(  # noqa: PLR0913
             checkpoint_path=checkpoint_path,
             resume=resume,
             retry_failed=retry_failed,
+            overwrite=overwrite,
             trace_prompt=trace_prompt,
             trace_prompt_file=trace_prompt_file,
             verbose=verbose,

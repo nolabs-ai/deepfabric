@@ -280,7 +280,6 @@ def template_manifest(
         )
         if content is not None:
             overrides[step] = {
-                "text": content,
                 "sha256": hashlib.sha256(content.encode()).hexdigest(),
                 "file": source.file if source is not None else None,
             }

@@ -85,6 +85,17 @@ def test_topic_sidecar_is_distinct_even_without_expected_extension(config, tmp_p
     )
 
 
+def test_replaced_topics_also_replace_their_failure_sidecar(config, tmp_path):
+    target = tmp_path / "topics.jsonl"
+    for run in ("first", "second"):
+        tree = fake_tree()
+        tree.failed_generations = [run]
+        assert save_topic_model(tree, config, str(target), replace=True) == str(target)
+    sidecar = tmp_path / "topics_failed.jsonl"
+    assert json.loads(sidecar.read_text())["failed_generation"] == "second"
+    assert not (tmp_path / "topics_failed_1.jsonl").exists()
+
+
 def test_failure_export_error_blocks_upload_and_checkpoint_cleanup(config, tmp_path):
     engine = Mock()
     engine.stop_requested = False

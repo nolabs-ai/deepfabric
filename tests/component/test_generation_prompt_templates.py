@@ -214,7 +214,6 @@ def test_files_resolve_relative_to_yaml_and_are_snapshotted(tmp_path, monkeypatc
         engine = DataSetGenerator(**params)
     assert engine.build_prompt(engine._get_prompt_template(), 0) == "FIRST PERSONA"
     manifest = template_manifest(engine.config.prompt_templates)
-    assert manifest["overrides"]["full_sample"]["text"] == "FIRST {{ generation_system_prompt }}"
     assert (
         manifest["overrides"]["full_sample"]["sha256"]
         == hashlib.sha256(b"FIRST {{ generation_system_prompt }}").hexdigest()
@@ -553,11 +552,9 @@ def test_report_captures_loaded_template_even_if_file_changes_mid_run(tmp_path):
         reports.append(json.loads(report.read_text()))
     assert reports[0]["config"]["sha256"] == reports[1]["config"]["sha256"]
     first, second = [report["prompt_templates"]["overrides"]["full_sample"] for report in reports]
-    assert first["text"] == "FIRST {{ generation_system_prompt }}"
-    assert (
-        second["text"] == "SECOND {{ generation_system_prompt }}"
-        and first["sha256"] != second["sha256"]
-    )
+    assert first["sha256"] == hashlib.sha256(b"FIRST {{ generation_system_prompt }}").hexdigest()
+    assert second["sha256"] == hashlib.sha256(b"SECOND {{ generation_system_prompt }}").hexdigest()
+    assert "text" not in first  # The report records prompts only through --trace-prompt.
     assert reports[0]["prompt_templates"]["builtins"]["bulk_full_sample.txt"]
     assert (
         reports[0]["prompt_templates"]["overrides"]["sequential_later"]["sha256"] == first["sha256"]

@@ -4,6 +4,7 @@
 import asyncio
 import json
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -52,6 +53,9 @@ async def test_retry_failed_multiple_resumes_keep_paid_attempts_without_double_c
         engine = resumed
     assert len(report["checkpoint_accounting"]["invocations"]) == 3
     assert len(report["records"]) == 0  # Historical request events are never reconstructed.
+    # Failed samples are not missing usage: every finished invocation counts as complete.
+    assert report["cumulative"]["unfinished_invocations"] == []
+    assert report["cumulative"]["complete"]
 
 
 async def test_accounting_only_updates_leave_unflushed_samples_out_of_metadata(tmp_path):
@@ -74,7 +78,10 @@ async def test_accounting_only_updates_leave_unflushed_samples_out_of_metadata(t
         if status is None:
             inspect()
 
-    with patch.object(engine, "_persist_accounting", side_effect=persist):
+    with (
+        patch("deepfabric.generator.ACCOUNTING_PERSIST_INTERVAL_SECONDS", 0),
+        patch.object(engine, "_persist_accounting", side_effect=persist),
+    ):
         await run(engine, tracker)
     assert len(observed) == 4
     assert all(m["total_samples"] == 0 and m["sample_slots"] == [] for m in observed)
@@ -135,7 +142,10 @@ async def test_accounting_write_failure_does_not_change_sample_result(tmp_path):
             raise OSError("simulated accounting disk failure")
         return original(metadata)
 
-    with patch.object(engine, "_write_checkpoint_metadata", side_effect=write):
+    with (
+        patch("deepfabric.generator.ACCOUNTING_PERSIST_INTERVAL_SECONDS", 0),
+        patch.object(engine, "_write_checkpoint_metadata", side_effect=write),
+    ):
         data, report = await run(engine)
     assert len(data) == 4
     assert engine._accounting_persistence_failed
@@ -264,3 +274,48 @@ async def test_missing_usage_and_changed_model_remain_distinct(tmp_path):
     groups = {(g["provider"], g["model"]): g for g in cumulative["by_model"]}
     assert groups[("openai", "test")]["tokens"]["total_tokens"] == 48
     assert groups[("anthropic", "new-model")]["tokens"]["total_tokens"] is None
+
+
+# Patch only the generator's clock; the event loop keeps the real time.monotonic.
+FROZEN_CLOCK = SimpleNamespace(monotonic=lambda: 100.0)
+
+
+@pytest.mark.parametrize("interval", [0, 5.0])
+async def test_accounting_rewrites_are_throttled_but_final_usage_is_saved(tmp_path, interval):
+    """Per-response metadata rewrites made large runs roughly quadratic."""
+    engine, _ = make_engine(tmp_path, "independent", checkpoint_interval=99)
+    writes = []
+    original = engine._write_checkpoint_metadata
+
+    def write(metadata):
+        writes.append(metadata)
+        return original(metadata)
+
+    with (
+        patch("deepfabric.generator.ACCOUNTING_PERSIST_INTERVAL_SECONDS", interval),
+        patch("deepfabric.generator.time", FROZEN_CLOCK),
+        patch.object(engine, "_write_checkpoint_metadata", side_effect=write),
+    ):
+        await run(engine)
+    accounting_only = [m for m in writes if m["total_samples"] == 0][1:]  # skip run start
+    assert len(accounting_only) == (4 if interval == 0 else 0)
+    saved = json.loads(engine._checkpoint_metadata_path.read_text())["token_accounting"]
+    assert next(iter(saved["invocations"].values()))["usage"]["requests"] == 4
+
+
+async def test_final_usage_is_saved_when_a_throttled_run_stops(tmp_path):
+    engine, _ = make_engine(tmp_path, "independent", checkpoint_interval=99)
+    tracker = TokenUsageTracker()
+
+    def stop_after_two():
+        if tracker.snapshot(include_accounting=False)["requests"] == 2:
+            engine.stop_requested = True
+
+    tracker.subscribe(stop_after_two)
+    with patch("deepfabric.generator.time", FROZEN_CLOCK):
+        await run(engine, tracker, batch_size=1)
+    observed = tracker.snapshot(include_accounting=False)["requests"]
+    saved = json.loads(engine._checkpoint_metadata_path.read_text())["token_accounting"]
+    session = saved["invocations"][saved["current_invocation_id"]]
+    assert session["status"] == "unfinished"
+    assert session["usage"]["requests"] == observed >= 2
