@@ -1,0 +1,7 @@
+{
+  "pullRequestSecurityReview": {
+    "maxFiles": 200,
+    "maxPatchBytes": 1200000,
+    "maxContextBytes": 1000000
+  }
+}

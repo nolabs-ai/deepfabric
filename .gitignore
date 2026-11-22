@@ -130,6 +130,7 @@ target/
 venv/
 *.jsonl
 *.json
+!.github/nogent.json
 formats/*
 # coverage files
 .coverage.*
