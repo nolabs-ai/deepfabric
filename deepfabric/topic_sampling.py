@@ -42,14 +42,8 @@ class TopicSamplingConfig(BaseModel):
             validate_template(self.prompt_template, "full_sample")
         return self
 
-    def validate_topic_sampling(
-        self, output_schema: dict | None, *, has_tools: bool, uses_tools: bool | None = None
-    ) -> None:
-        """Validate options without changing existing independent-generation defaults.
-
-        uses_tools, when given, is whether any tool is actually configured; it refines
-        has_tools for the unused-template warning only.
-        """
+    def validate_topic_sampling(self, output_schema: dict | None, *, has_tools: bool) -> None:
+        """Validate options using configured tool components and custom tools."""
         if self.bulk.max_tokens_per_call is not None and self.topic_sample_mode != "bulk":
             raise ValueError("bulk.max_tokens_per_call requires topic_sample_mode: bulk")
         if self.seed_field is not None:
@@ -74,15 +68,14 @@ class TopicSamplingConfig(BaseModel):
             self.topic_sample_mode == "bulk" and self.shared_scope == "seed"
         ):
             raise ValueError("completion_includes_topic_path requires bulk with shared_scope: seed")
-        tools = has_tools if uses_tools is None else uses_tools
-        unused = self._unused_prompt_templates(has_tools=tools, output_schema=output_schema)
+        unused = self._unused_prompt_templates(has_tools=has_tools, output_schema=output_schema)
         if unused:
             # A warning, not an error: one template set may be shared across mode experiments.
             # Default stacklevel keeps one warning when both config layers validate.
             warnings.warn(
                 f"Prompt templates not used by this configuration and ignored: "
                 f"{', '.join(unused)} (topic_sample_mode={self.topic_sample_mode}, "
-                f"shared_scope={self.shared_scope}, tools={'yes' if tools else 'no'})",
+                f"shared_scope={self.shared_scope}, tools={'yes' if has_tools else 'no'})",
                 UserWarning,
                 stacklevel=1,
             )

@@ -3,7 +3,9 @@
 import warnings
 
 import pytest
+import yaml
 
+from deepfabric.builders import determine_builder_type
 from deepfabric.config import DeepFabricConfig, GenerationConfig
 from deepfabric.generator import DataSetGeneratorConfig
 from deepfabric.topic_sampling import TopicSamplingConfig
@@ -76,20 +78,78 @@ def test_full_scope_needs_no_seed_field(make_config, mode, schema):
     assert config.shared_scope == "full" and config.seed_field is None
 
 
-def test_tools_full_collection_has_actionable_error():
+@pytest.mark.parametrize(
+    "tools,python_tools",
+    [
+        (
+            {"components": {"builtin": ["read_file"]}},
+            {"tool_components": {"builtin": ["read_file"]}},
+        ),
+        (
+            {"custom": [{"name": "lookup", "description": "Look up a value", "parameters": []}]},
+            {
+                "custom_tools": [
+                    {"name": "lookup", "description": "Look up a value", "parameters": []}
+                ]
+            },
+        ),
+    ],
+)
+def test_tools_full_collection_has_actionable_error(tools, python_tools):
     with pytest.raises(ValueError, match="agent builder cannot produce a collection"):
         GenerationConfig(
-            system_prompt="Persona", tools={}, topic_sample_mode="bulk", shared_scope="full"
+            system_prompt="Persona", tools=tools, topic_sample_mode="bulk", shared_scope="full"
         )
     with pytest.raises(ValueError, match="agent builder cannot produce a collection"):
         DataSetGeneratorConfig(
             generation_system_prompt="Persona",
             provider="openai",
             model_name="test",
-            tool_components={"builtin": ["read_file"]},
+            **python_tools,
             topic_sample_mode="bulk",
             shared_scope="full",
         )
+
+
+@pytest.mark.parametrize(
+    "tools",
+    [
+        None,
+        {},
+        {"components": {}, "custom": []},
+        {"spin_endpoint": "http://localhost:3000"},
+        {"tools_endpoint": "http://localhost:3000/tools"},
+    ],
+)
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"topic_sample_mode": "sequential", "shared_scope": "seed"},
+        {"topic_sample_mode": "sequential", "shared_scope": "full"},
+        {"topic_sample_mode": "bulk", "shared_scope": "seed"},
+        {"topic_sample_mode": "bulk", "shared_scope": "full"},
+    ],
+)
+def test_empty_tools_yaml_and_python_select_non_agent(tmp_path, tools, options):
+    path = tmp_path / "empty-tools.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "topics": {"prompt": "Topics"},
+                "generation": {"system_prompt": "Persona", "tools": tools, **options},
+                "output": {"save_as": "samples.jsonl"},
+            }
+        )
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        loaded = DeepFabricConfig.from_yaml(str(path))
+        direct = DataSetGeneratorConfig(**loaded.get_generation_params())
+    assert direct.tool_components == {}
+    assert direct.custom_tools == []
+    assert determine_builder_type(direct).name == "single_shot"
+    assert direct.topic_sample_mode == loaded.generation.topic_sample_mode
 
 
 @pytest.mark.parametrize("include_path", [False, True])
@@ -323,21 +383,35 @@ def test_seed_only_schema_never_renders_completion():
     assert config._unused_prompt_templates(has_tools=False, output_schema=SCHEMA) == []
 
 
-def test_both_config_layers_report_the_same_tools_value():
+@pytest.mark.parametrize(
+    "tools",
+    [
+        None,
+        {},
+        {"components": {}, "custom": []},
+        {"spin_endpoint": "http://localhost:3000"},
+        {"tools_endpoint": "http://x"},
+        {"components": {"builtin": ["read_file"]}},
+        {"custom": [{"name": "lookup", "description": "Look up a value", "parameters": []}]},
+    ],
+)
+def test_both_config_layers_report_the_same_tools_value(tools):
     """Identical messages let Python show the CLI warning once."""
     options = {
         "topic_sample_mode": "bulk",
         "prompt_templates": {"full_sample": ANY_STAGE},
     }
     with pytest.warns(UserWarning) as yaml_layer:
-        GenerationConfig(system_prompt="Persona", tools={"tools_endpoint": "http://x"}, **options)
+        config = GenerationConfig(system_prompt="Persona", tools=tools, **options)
     with pytest.warns(UserWarning) as generator_layer:
         DataSetGeneratorConfig(
             generation_system_prompt="Persona",
             provider="openai",
             model_name="test",
-            tools_endpoint="http://x",
+            tool_components=config.tools.components if config.tools else {},
+            custom_tools=config.tools.custom if config.tools else [],
             **options,
         )
     assert str(yaml_layer[0].message) == str(generator_layer[0].message)
-    assert "tools=no" in str(yaml_layer[0].message)
+    has_tools = config.tools is not None and bool(config.tools.components or config.tools.custom)
+    assert f"tools={'yes' if has_tools else 'no'}" in str(yaml_layer[0].message)
