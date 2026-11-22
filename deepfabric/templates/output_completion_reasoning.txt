@@ -1,0 +1,1 @@
+Return only assistant content and a reasoning trace with style {{ style }} and content as {{ content }}.

@@ -75,11 +75,12 @@ Reasoning datasets include a `reasoning` field alongside messages:
 
 ## Reasoning Styles
 
-DeepFabric supports one reasoning style for chain-of-thought:
+DeepFabric supports two reasoning styles:
 
 | Style | Description |
 |-------|-------------|
 | `freetext` | Natural language explanation of thought process |
+| `agent` | Structured reasoning steps; tools are enabled separately through `generation.tools` |
 
 The `freetext` style produces readable, conversational reasoning traces.
 

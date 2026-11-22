@@ -1,0 +1,30 @@
+.table-column-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.6rem 0;
+}
+
+.table-column-toggle {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.table-column-toggle:hover {
+  border-color: var(--md-accent-fg-color);
+}
+
+.table-column-toggle:focus-visible {
+  outline: 2px solid var(--md-accent-fg-color);
+  outline-offset: 2px;
+}
+
+.column-toggle-table [hidden] {
+  display: none !important;
+}

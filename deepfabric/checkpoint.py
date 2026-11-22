@@ -68,6 +68,27 @@ def validate_checkpoint(metadata: dict, samples_path: Path, failures_path: Path)
     elif plan.get("generation_mode") != "step_based":
         raise DataSetGeneratorError("Unknown checkpoint generation mode")
     limits = slot_limits(plan)
+    seeds = metadata.get("seeds", {})
+    attempts = metadata.get("collection_attempts", {})
+    if not isinstance(seeds, dict) or not isinstance(attempts, dict):
+        raise DataSetGeneratorError("Invalid checkpoint topic collection state")
+    for topic_id, topic_seeds in seeds.items():
+        if topic_id not in limits or not isinstance(topic_seeds, dict):
+            raise DataSetGeneratorError("Invalid checkpoint seed topic")
+        for ordinal in topic_seeds:
+            if (
+                not isinstance(ordinal, str)
+                or not ordinal.isascii()
+                or not ordinal.isdecimal()
+                or str(int(ordinal)) != ordinal
+                or not valid_slot((topic_id, int(ordinal)), limits)
+            ):
+                raise DataSetGeneratorError("Invalid checkpoint seed identity")
+    if any(
+        topic_id not in limits or type(count) is not int or count < 0
+        for topic_id, count in attempts.items()
+    ):
+        raise DataSetGeneratorError("Invalid checkpoint collection attempt count")
     completed_list = metadata.get("completed", [])
     success_list = metadata.get("sample_slots", [])
     if not all(valid_slot(item, limits) for item in completed_list + success_list):

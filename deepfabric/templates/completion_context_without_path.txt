@@ -1,0 +1,1 @@
+The pinned seed supplies the task context at this stage; no topic path is provided. Interpret instructions about supplied topic context using that seed.

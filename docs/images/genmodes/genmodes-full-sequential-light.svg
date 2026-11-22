@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 424 222" width="424" height="222" role="img" aria-label="full sequential generation, animated">
+<style>
+:root { --bg: #ffffff; --surface: #ffffff; --ink: #1f2a44; --muted: #667085; --frame: #b8bfcc; --grid: #dde1e8; --prompt: #2b4a9b; --prompt-bg: #eaf0fb; --user: #c2185b; --pair-bg: #fdf0f5; --comp: #2e7d32; --comp-bg: #eaf5ec; --hist: #e07b00; --seed: #8d5a1d; font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.t { fill: var(--ink); font-size: 16px; text-anchor: middle; font-family: inherit; }
+.t-sm { font-size: 14px; }
+.t-user { fill: var(--user); }
+.t-comp { fill: var(--comp); }
+.t-prompt { fill: var(--prompt); }
+.t-llm { fill: var(--muted); font-size: 15px; font-style: italic; }
+.t-note { fill: var(--muted); font-size: 14px; }
+.t-badge { paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; }
+.t-na { fill: var(--muted); font-size: 20px; }
+.t-cap { font-size: 14px; }
+.t-cap.hist { fill: var(--hist); }
+.t-cap.seed { fill: var(--seed); }
+.t-head { fill: var(--ink); font-size: 21px; font-weight: 600; text-anchor: middle; }
+.b-topic { fill: var(--surface); stroke: var(--ink); stroke-width: 1.5; }
+.b-prompt { fill: var(--prompt-bg); stroke: var(--prompt); stroke-width: 1; }
+.b-comp { fill: var(--comp-bg); stroke: var(--comp); stroke-width: 1; }
+.b-pair { fill: var(--pair-bg); stroke: var(--user); stroke-width: 1.5; }
+.b-seed { fill: var(--surface); stroke: var(--user); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.divider { stroke: var(--user); stroke-opacity: 0.45; }
+.hl { fill: none; stroke: var(--hist); stroke-width: 2.4; }
+.ln { fill: none; stroke: var(--ink); stroke-width: 1.6; }
+.tether { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 2; }
+.bus { fill: none; stroke-width: 2.4; stroke-linecap: round; }
+.bus.hist { stroke: var(--hist); }
+.bus.seed { stroke: var(--seed); }
+.halo { fill: none; stroke: var(--bg); stroke-width: 9; }
+.dot.hist { fill: var(--hist); }
+.dot.seed { fill: var(--seed); }
+.mk-ink { fill: var(--ink); }
+.mk-hist { fill: var(--hist); }
+.mk-seed { fill: var(--seed); }
+.grp { fill: var(--bg); stroke: var(--frame); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.grid { stroke: var(--grid); stroke-width: 1.5; }
+.fade { opacity: 0.7; stroke-dasharray: 3 4; }
+.lblbg { fill: var(--bg); }
+.t-more { fill: var(--muted); font-size: 22px; font-weight: 600; }
+@keyframes a1 { 0%, 0.01% { opacity: 1; } 2.43%, 97.57% { opacity: 1; } 100% { opacity: 1; } }
+.st1 { animation: a1 14.400000000000002s linear infinite; }
+@keyframes a2 { 0%, 11.11% { opacity: 0.06; } 13.54%, 97.57% { opacity: 1; } 100% { opacity: 0.06; } }
+.st2 { animation: a2 14.400000000000002s linear infinite; }
+@keyframes a3 { 0%, 22.22% { opacity: 0.06; } 24.65%, 97.57% { opacity: 1; } 100% { opacity: 0.06; } }
+.st3 { animation: a3 14.400000000000002s linear infinite; }
+@keyframes a4 { 0%, 33.33% { opacity: 0.06; } 35.76%, 97.57% { opacity: 1; } 100% { opacity: 0.06; } }
+.st4 { animation: a4 14.400000000000002s linear infinite; }
+@keyframes a5 { 0%, 44.44% { opacity: 0.06; } 46.87%, 97.57% { opacity: 1; } 100% { opacity: 0.06; } }
+.st5 { animation: a5 14.400000000000002s linear infinite; }
+@keyframes a6 { 0%, 55.56% { opacity: 0.06; } 57.99%, 97.57% { opacity: 1; } 100% { opacity: 0.06; } }
+.st6 { animation: a6 14.400000000000002s linear infinite; }
+@keyframes a7 { 0%, 66.67% { opacity: 0.06; } 69.10%, 97.57% { opacity: 1; } 100% { opacity: 0.06; } }
+.st7 { animation: a7 14.400000000000002s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) { .st { animation: none !important; opacity: 1 !important; } }
+</style>
+<defs><marker id="m-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk-ink"/></marker><marker id="m-hist" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk-hist"/></marker><marker id="m-seed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk-seed"/></marker></defs>
+<rect width="100%" height="100%" rx="8" fill="var(--bg)"/>
+<g class="st st1">
+<rect x="28" y="20" width="72" height="44" rx="6" class="b-topic"/>
+<text x="64" y="38.4" class="t" >Topic</text>
+<text x="64" y="56.4" class="t" >path</text>
+</g>
+<g class="st st1">
+<path d="M64 64V79" class="ln" />
+</g>
+<g class="st st2">
+<path d="M64 117V146" class="ln" marker-end="url(#m-ink)"/>
+</g>
+<g class="st st1">
+<rect x="20" y="79" width="88" height="38" rx="6" class="b-prompt"/>
+<text x="64" y="94.8" class="t t-sm t-prompt" >Generation</text>
+<text x="64" y="110.8" class="t t-sm t-prompt" >prompt</text>
+</g>
+<g class="st st2">
+<text x="64" y="134" class="t t-llm t-badge" >LLM call</text>
+</g>
+<g class="st st2">
+<rect x="22" y="146" width="84" height="58" rx="6" class="b-pair"/>
+<line x1="22" y1="175" x2="106" y2="175" class="divider"/>
+<text x="64" y="166" class="t t-user" >user</text>
+<text x="64" y="195" class="t" >assistant</text>
+<text x="18" y="150" class="t t-note t-badge" style="text-anchor:start">#1</text>
+</g>
+<g class="st st4">
+<path d="M188 117V146" class="ln" marker-end="url(#m-ink)"/>
+</g>
+<g class="st st3">
+<rect x="144" y="79" width="88" height="38" rx="6" class="b-prompt"/>
+<text x="188" y="94.8" class="t t-sm t-prompt" >Later gen.</text>
+<text x="188" y="110.8" class="t t-sm t-prompt" >prompt</text>
+</g>
+<g class="st st4">
+<text x="188" y="134" class="t t-llm t-badge" >LLM call</text>
+</g>
+<g class="st st4">
+<rect x="146" y="146" width="84" height="58" rx="6" class="b-pair"/>
+<line x1="146" y1="175" x2="230" y2="175" class="divider"/>
+<text x="188" y="166" class="t t-user" >user</text>
+<text x="188" y="195" class="t" >assistant</text>
+<text x="142" y="150" class="t t-note t-badge" style="text-anchor:start">#2</text>
+</g>
+<g class="st st6">
+<path d="M312 117V146" class="ln" marker-end="url(#m-ink)"/>
+</g>
+<g class="st st5">
+<rect x="268" y="79" width="88" height="38" rx="6" class="b-prompt"/>
+<text x="312" y="94.8" class="t t-sm t-prompt" >Later gen.</text>
+<text x="312" y="110.8" class="t t-sm t-prompt" >prompt</text>
+</g>
+<g class="st st6">
+<text x="312" y="134" class="t t-llm t-badge" >LLM call</text>
+</g>
+<g class="st st6">
+<rect x="270" y="146" width="84" height="58" rx="6" class="b-pair"/>
+<line x1="270" y1="175" x2="354" y2="175" class="divider"/>
+<text x="312" y="166" class="t t-user" >user</text>
+<text x="312" y="195" class="t" >assistant</text>
+<text x="266" y="150" class="t t-note t-badge" style="text-anchor:start">#3</text>
+</g>
+<g class="st st3">
+<path d="M108 90H144" class="ln" marker-end="url(#m-ink)"/>
+</g>
+<g class="st st5">
+<path d="M232 90H268" class="ln" marker-end="url(#m-ink)"/>
+</g>
+<g class="st st3">
+<path d="M113 175H115Q127 175 127 163V118Q127 106 139 106H144" class="halo" />
+<path d="M113 175H115Q127 175 127 163V118Q127 106 139 106H144" class="bus hist" marker-end="url(#m-hist)"/>
+<path d="M113 152V198" class="bus hist" />
+</g>
+<g class="st st5">
+<path d="M237 175H239Q251 175 251 163V118Q251 106 263 106H268" class="halo" />
+<path d="M237 175H239Q251 175 251 163V118Q251 106 263 106H268" class="bus hist" marker-end="url(#m-hist)"/>
+<path d="M237 152V198" class="bus hist" />
+</g>
+<g class="st st7">
+<path d="M356 90H387" class="ln fade" />
+<text x="403" y="104" class="t t-more" >…</text>
+<path d="M361 152V198" class="bus hist fade" />
+<path d="M361 175H363Q375 175 375 163V118Q375 106 387 106H387" class="bus hist fade" />
+</g>
+<g class="st st7">
+<text x="415" y="67" class="t t-note" style="text-anchor:end">N chained calls</text>
+</g>
+</svg>

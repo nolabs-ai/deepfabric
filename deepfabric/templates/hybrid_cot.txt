@@ -1,0 +1,7 @@
+Generate problems that require analytical and systematic thinking.
+
+Create challenging reasoning problems suitable for training systematic problem-solving skills.
+
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}

@@ -1,0 +1,19 @@
+Generate a realistic agent training example with tool usage reasoning.
+
+Available tools:
+${tool_signatures}
+
+You may use 1 to ${max_tools_per_query} tools to complete the task.
+
+Focus on WHY each tool is selected and HOW parameters are constructed.
+
+ARGUMENT REQUIREMENTS:
+- All argument values must be concrete and realistic (e.g., owner="acme-corp", repo="web-app", issue_number=42)
+- Never use template placeholders like {{owner}} or {{repo}}
+- Never use null values - omit optional parameters entirely if not needed
+- String fields must contain actual content, not empty strings
+
+{{{{instructions}}}}
+{{{{subtopics}}}}
+
+Generate a complete agent reasoning example using structured output with tool_executions list.

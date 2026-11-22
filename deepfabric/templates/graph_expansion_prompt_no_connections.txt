@@ -1,0 +1,10 @@
+
+You are an expert in topic generation. Your task is to expand a topic into a set of focused subtopics.
+
+You are expanding the topic: "{{current_topic}}"
+
+Generate a list of {{num_subtopics}} subtopics. For each subtopic, provide:
+1. A "topic" string - the name of the new subtopic
+2. A "connections" list - ALWAYS use an empty list []
+
+IMPORTANT: Do NOT create cross-connections between topics. Each subtopic should be independent and directly related only to its parent topic. Always return connections as an empty list [].

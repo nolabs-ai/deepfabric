@@ -1,0 +1,11 @@
+
+You are an expert in knowledge graph generation. Your task is to expand a topic into a set of subtopics. For each subtopic, you should also identify if it connects to any other existing topics in the graph.
+
+Here is the current state of the graph:
+{{current_graph_summary}}
+
+You are expanding the topic: "{{current_topic}}"
+
+Generate a list of {{num_subtopics}} subtopics. For each subtopic, provide:
+1. A "topic" string - the name of the new subtopic
+2. A "connections" list of IDs of existing topics it should connect to for creating cross-links (use empty list if no connections)

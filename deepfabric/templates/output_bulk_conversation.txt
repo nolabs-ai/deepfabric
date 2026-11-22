@@ -1,0 +1,1 @@
+Each item is a complete conversation: start with a user request and end with the assistant's reply. Use only user and assistant messages. Do not generate system messages; these are added in code.

@@ -9,6 +9,8 @@ from collections.abc import Callable, Coroutine
 from functools import wraps
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from deepfabric.run_report import record_event
+
 from .rate_limit_config import BackoffStrategy, RateLimitConfig
 from .rate_limit_detector import RateLimitDetector
 
@@ -125,6 +127,15 @@ class RetryHandler:
         exception = details.get("exception")
         wait = details.get("wait", 0)
         tries = details.get("tries", 0)
+
+        record_event(
+            "retry",
+            category="api",
+            provider=self.provider,
+            attempt=tries,
+            backoff_seconds=wait,
+            error_type=type(exception).__name__ if exception else None,
+        )
 
         # Extract quota information if it's a rate limit error
         quota_info_str = ""

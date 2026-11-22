@@ -66,18 +66,26 @@ This installs:
 
 ### 4. Run the test suite
 
-Ensure all tests pass before submitting changes.
+#### Test categories
 
-#### Unit tests (required)
+| Directory | Scope | External services |
+| --- | --- | --- |
+| `tests/unit/` | Focused behavior of a function or class, such as validation, schema conversion, or prompt formatting. | Mock external I/O. |
+| `tests/component/` | Internal workflows with several real components working together, such as schedulers, builders, checkpoint storage, and event consumers. | Mock provider, Spin, and other external-service I/O; no live credentials required. |
+| `tests/integration/` | Compatibility with real external systems, such as LLM providers, Spin, and dataset hubs. | May require credentials, endpoints, and network access. |
 
-At a minimum, please run the unit test suite. Additional integration and security checks are recommended when relevant.
+Offline acceptance tests of generation workflows belong in `tests/component/`.
+
+#### Offline tests (required)
+
+Run **both unit and component tests** before submitting changes. CI and the build
+target run this combined offline suite.
 
 <details>
 <summary>Option A: Standard Python (`venv` + `pip`)</summary>
 
 ```sh
-# Make sure your virtual environment is activated.
-pytest tests/unit/
+pytest tests/unit/ tests/component/
 ```
 </details>
 
@@ -85,14 +93,16 @@ pytest tests/unit/
 <summary>Option B: Using `uv` (recommended)</summary>
 
 ```sh
-uv run pytest tests/unit/
+uv run pytest tests/unit/ tests/component/
 ```
 </details>
 
+The equivalent Makefile target is `make test-offline`. For a focused run, use
+`make test-unit` or `make test-component`.
+
 #### Integration tests (optional, but recommended)
 
-Integration tests cover interactions with external systems (e.g. LLM providers). They may require additional environment variables or credentials.
-Please refer to the [Makefile](./Makefile) for available integration test targets.
+See the [Makefile](./Makefile) for integration test targets, including provider-specific runs.
 
 #### Security checks (optional)
 

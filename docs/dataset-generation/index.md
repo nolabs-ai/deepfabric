@@ -53,8 +53,9 @@ graph LR
 === "Basic"
 
     ```yaml title="config.yaml"
-    conversation:
-      type: basic
+    generation:
+      conversation:
+        type: basic
     ```
 
     Simple Q&A without explicit reasoning.
@@ -62,9 +63,10 @@ graph LR
 === "Reasoning"
 
     ```yaml title="config.yaml"
-    conversation:
-      type: cot
-      reasoning_style: freetext
+    generation:
+      conversation:
+        type: cot
+        reasoning_style: freetext
     ```
 
     Includes step-by-step reasoning traces.
@@ -72,10 +74,14 @@ graph LR
 === "Agent"
 
     ```yaml title="config.yaml"
-    # Agent mode is implicit when tools are configured
-    conversation:
-      type: cot
-      reasoning_style: agent
+    generation:
+      conversation:
+        type: cot
+        reasoning_style: agent
+      tools:
+        spin_endpoint: http://localhost:3000
+        components:
+          builtin: [read_file]
     ```
 
     Tool-calling with ReAct-style reasoning.
@@ -95,6 +101,7 @@ graph LR
 
 ## Next Steps
 
+- [Sample Generation Modes](sampling-modes.md) - Independent, sequential and bulk generation
 - [Basic Datasets](basic.md) - Simple Q&A generation
 - [Reasoning Datasets](reasoning.md) - Chain-of-thought training data
 - [Agent Datasets](agent.md) - Tool-calling datasets

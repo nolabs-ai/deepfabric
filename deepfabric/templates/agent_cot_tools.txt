@@ -1,0 +1,11 @@
+Generate an agent tool-calling training example using the available tool definitions.
+
+You may use multiple tools (up to the specified limit) to complete the task.
+
+Focus on the reasoning process: WHY each tool is selected, HOW parameters are constructed, and WHAT results are expected.
+
+Create realistic scenarios that teach proper tool reasoning patterns and multi-tool orchestration.
+
+{{ instructions }}
+{{ examples }}
+{{ subtopics }}

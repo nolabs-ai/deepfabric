@@ -2,6 +2,7 @@
 # ruff: noqa: PLR2004
 
 import json
+import os
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -11,7 +12,8 @@ import yaml
 
 from click.testing import CliRunner
 
-from deepfabric.cli import cli
+from deepfabric.cli import _prompt_with_timeout, cli
+from deepfabric.dataset_manager import save_dataset
 from deepfabric.generator import DataSetGenerator
 from deepfabric.schemas import TopicList
 from deepfabric.utils import build_checkpoint_file_paths
@@ -234,7 +236,15 @@ def test_missing_checkpoint_preserves_fresh_run_fallback(workflow, flags):
 
 def test_timeout_uses_displayed_retry_default(workflow):
     assert workflow.run().exit_code == 0
-    with patch("deepfabric.cli.select.select", return_value=([], [], [])):
+
+    def timed_prompt(*args, **kwargs):
+        with patch("deepfabric.cli.sys.stdin", Mock(fileno=lambda: 0)):
+            return _prompt_with_timeout(*args, **kwargs)
+
+    with (
+        patch("deepfabric.cli.select.select", return_value=([], [], [])),
+        patch("deepfabric.cli._prompt_with_timeout", side_effect=timed_prompt),
+    ):
         result = workflow.run()
     assert result.exit_code == 0, result.output
     assert "auto-1 in" in result.output
@@ -336,7 +346,23 @@ def test_complete_success_recovery_failures_preserve_checkpoint(workflow, failur
     else:
         result = workflow.run("--resume")
     assert result.exit_code == (0 if failure == "cleanup" else 1), result.output
-    assert {p: p.read_bytes() for p in before} == before
+    if failure in ("save", "cleanup"):
+        # Accounting records the recovery invocation; saved slot outcomes remain intact.
+        for path, content in before.items():
+            if path == workflow.paths[0]:
+                original = json.loads(content)
+                current = json.loads(path.read_bytes())
+                for metadata in (original, current):
+                    metadata.pop("created_at", None)
+                    metadata.pop("token_accounting", None)
+                    # Completed slots are serialized from a set, so only their
+                    # membership is meaningful; resume reads them back into a set.
+                    metadata["completed"] = sorted(map(tuple, metadata["completed"]))
+                assert current == original
+            else:
+                assert path.read_bytes() == content
+    else:
+        assert {p: p.read_bytes() for p in before} == before
     assert len(workflow.calls) == calls
     if failure == "cleanup":
         assert len(rows(workflow.dataset)) == 4
@@ -396,6 +422,7 @@ def test_unloadable_checkpoint_defaults_to_abort_without_changes(workflow, kind,
 def test_unloadable_checkpoint_can_be_cleared_for_a_fresh_run(workflow, kind):
     break_checkpoint(workflow, kind)
     calls = len(workflow.calls)
+    original_rows = rows(workflow.dataset)
 
     with patch("deepfabric.cli._prompt_with_timeout", return_value="1"):
         result = workflow.run()
@@ -403,5 +430,179 @@ def test_unloadable_checkpoint_can_be_cleared_for_a_fresh_run(workflow, kind):
     assert result.exit_code == 0, result.output
     assert "Checkpoint cleared, starting fresh generation" in result.output
     assert len(workflow.calls) == calls + 4
-    assert len(rows(workflow.dataset)) == 4
+    assert rows(workflow.dataset) == original_rows
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 4
     assert not any(path.exists() for path in workflow.paths)
+
+
+@pytest.mark.parametrize("how", ["default", "flag", "config"])
+def test_retry_replaces_only_the_runs_own_numbered_export(workflow, how):
+    """A retry must not overwrite unrelated data the first run saved around."""
+    if how == "config":
+        settings = yaml.safe_load(workflow.config.read_text())
+        settings["output"]["checkpoint"]["retry_failed"] = True
+        workflow.config.write_text(yaml.safe_dump(settings))
+    flags = ("--retry-failed",) if how == "flag" else ()
+    workflow.dataset.write_text('{"precious": true}\n')
+    numbered = workflow.dataset.with_name("dataset_1.jsonl")
+    assert workflow.run().exit_code == 0  # collision default saves under a new name
+    assert len(rows(numbered)) == 3
+    workflow.fail_again = True
+    retried = workflow.run(*flags)  # the retry fails again and keeps the checkpoint
+    assert retried.exit_code == 0, retried.output
+    assert workflow.paths[0].exists()
+    workflow.fail_again = False
+    final = workflow.run(*flags)  # a later retry still finds the original export
+    assert final.exit_code == 0, final.output
+    assert workflow.dataset.read_text() == '{"precious": true}\n'
+    assert len(rows(numbered)) == 4
+    assert not workflow.dataset.with_name("dataset_2.jsonl").exists()
+    assert not workflow.paths[0].exists()
+
+
+def test_resuming_a_stopped_retry_replaces_the_runs_own_export(workflow):
+    """A stopped retry reopens failed slots, so the next rerun resumes rather than retries."""
+    workflow.dataset.write_text('{"precious": true}\n')
+    numbered = workflow.dataset.with_name("dataset_1.jsonl")
+    workflow.fail_again = True
+    assert workflow.run().exit_code == 0  # every slot fails; empty export in dataset_1
+    assert numbered.exists()
+    workflow.fail_again = False
+    workflow.stop_after = len(workflow.calls) + 1
+    stopped = workflow.run()  # default Retry, stopped after one call
+    assert stopped.exit_code == 0, stopped.output
+    workflow.stop_after = None
+    metadata = json.loads(workflow.paths[0].read_text())
+    assert metadata["total_failures"] == 0
+    assert len(metadata["completed"]) < 4
+    resumed = workflow.run()  # failures were reopened: default is Resume
+    assert resumed.exit_code == 0, resumed.output
+    assert workflow.dataset.read_text() == '{"precious": true}\n'
+    assert len(rows(numbered)) == 4
+    assert not workflow.dataset.with_name("dataset_2.jsonl").exists()
+    assert not workflow.paths[0].exists()
+
+
+def test_failed_export_record_warns_and_keeps_results(workflow):
+    with patch.object(DataSetGenerator, "record_dataset_export", side_effect=OSError("disk full")):
+        result = workflow.run()
+    assert result.exit_code == 0, result.output
+    assert "Could not record the dataset export" in result.output
+    assert len(rows(workflow.dataset)) == 3
+    assert workflow.paths[0].exists()
+
+
+@pytest.mark.parametrize("export", [{"requested": "x"}, "dataset.jsonl", {"saved": 1}])
+def test_malformed_export_record_is_ignored(workflow, export):
+    assert workflow.run().exit_code == 0
+    metadata = json.loads(workflow.paths[0].read_text())
+    metadata["dataset_export"] = export
+    workflow.paths[0].write_text(json.dumps(metadata))
+    result = workflow.run()  # default Retry; with no usable record the dataset prompt applies
+    assert result.exit_code == 0, result.output
+    assert len(rows(workflow.dataset)) == 3
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 4
+
+
+def test_retry_prompts_when_another_run_rewrote_the_recorded_export(workflow):
+    """The record identifies the file, not just its path."""
+    assert workflow.run().exit_code == 0  # exports dataset.jsonl and keeps a failure
+    assert len(rows(workflow.dataset)) == 3
+    workflow.dataset.write_text('{"other": "run"}\n')  # someone reuses the path
+    retry = workflow.run()  # default Retry; dataset prompt defaults to a new filename
+    assert retry.exit_code == 0, retry.output
+    assert workflow.dataset.read_text() == '{"other": "run"}\n'
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 4
+
+
+def test_retry_prompts_when_export_swapped_for_same_size_file_with_same_mtime(workflow):
+    """Size and timestamps can be preserved by copies and restores; content cannot."""
+    assert workflow.run().exit_code == 0
+    original = workflow.dataset.read_text()
+    stat = workflow.dataset.stat()
+    foreign = original.replace("sample", "SAMPLE")
+    assert len(foreign) == len(original)
+    workflow.dataset.write_text(foreign)
+    os.utime(workflow.dataset, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    retry = workflow.run()
+    assert retry.exit_code == 0, retry.output
+    assert workflow.dataset.read_text() == foreign
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 4
+
+
+def test_retry_keeps_export_edited_while_the_retry_ran(workflow):
+    """The startup check is repeated just before the replacing save."""
+    assert workflow.run().exit_code == 0
+
+    def edit_then_save(dataset, path, *args, **kwargs):
+        with workflow.dataset.open("a") as stream:
+            stream.write('{"edited": true}\n')
+        return save_dataset(dataset, path, *args, **kwargs)
+
+    with patch("deepfabric.cli.save_dataset", side_effect=edit_then_save):
+        retry = workflow.run()
+    assert retry.exit_code == 0, retry.output
+    assert "changed during this run" in " ".join(retry.output.split())
+    assert rows(workflow.dataset)[-1] == {"edited": True}
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 4
+
+
+def without_checkpoint(workflow):
+    """A CI-style rerun: no checkpoint, existing topic and dataset outputs."""
+    settings = yaml.safe_load(workflow.config.read_text())
+    del settings["output"]["checkpoint"]
+    workflow.config.write_text(yaml.safe_dump(settings))
+    topics = workflow.dataset.with_name("topics.jsonl")
+    topics.write_text("old topics\n")
+    workflow.dataset.write_text("old dataset\n")
+    return topics
+
+
+def test_overwrite_replaces_existing_outputs_without_prompting(workflow):
+    topics = without_checkpoint(workflow)
+    with patch("deepfabric.cli._prompt_with_timeout") as prompt:
+        result = workflow.run("--overwrite")
+    assert result.exit_code == 0, result.output
+    prompt.assert_not_called()
+    assert "old topics" not in topics.read_text()
+    assert len(rows(workflow.dataset)) == 3  # One sample fails in this fixture.
+    assert not topics.with_name("topics_1.jsonl").exists()
+    assert not workflow.dataset.with_name("dataset_1.jsonl").exists()
+
+
+def test_overwrite_keeps_existing_dataset_when_the_run_fails(workflow):
+    without_checkpoint(workflow)
+    with patch("deepfabric.cli.create_dataset", side_effect=RuntimeError("boom")):
+        result = workflow.run("--overwrite")
+    assert result.exit_code != 0
+    assert workflow.dataset.read_text() == "old dataset\n"
+
+
+def test_without_overwrite_existing_outputs_still_get_new_filenames(workflow):
+    topics = without_checkpoint(workflow)
+    result = workflow.run()
+    assert result.exit_code == 0, result.output
+    assert topics.read_text() == "old topics\n"
+    assert workflow.dataset.read_text() == "old dataset\n"
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 3
+
+
+def test_overwrite_never_replaces_a_dataset_with_stopped_partial_results(workflow):
+    without_checkpoint(workflow)
+    workflow.stop_after = 2
+    result = workflow.run("--overwrite")
+    assert result.exit_code == 0, result.output
+    assert workflow.dataset.read_text() == "old dataset\n"
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 1
+
+
+def test_overwrite_never_replaces_a_directory_at_the_output_path(workflow):
+    without_checkpoint(workflow)
+    workflow.dataset.unlink()
+    workflow.dataset.mkdir()
+    with patch("deepfabric.cli._prompt_with_timeout") as prompt:
+        result = workflow.run("--overwrite")
+    assert result.exit_code == 0, result.output
+    prompt.assert_not_called()
+    assert workflow.dataset.is_dir()
+    assert len(rows(workflow.dataset.with_name("dataset_1.jsonl"))) == 3
