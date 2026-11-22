@@ -46,7 +46,7 @@ def gemini_config():
     """Common Gemini provider configuration for integration tests."""
     return {
         "provider": "gemini",
-        "model_name": os.getenv("GEMINI_TEST_MODEL", "gemini-2.0-flash"),
+        "model_name": os.getenv("GEMINI_TEST_MODEL", "gemini-3.8-flash"),
         "temperature": 0.2,
     }
 
