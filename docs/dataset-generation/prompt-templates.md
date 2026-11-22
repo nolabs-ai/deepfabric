@@ -395,11 +395,8 @@ alongside sample-template metadata.
 uv run deepfabric generate config.yaml --topics-load topics.json --dry-run --trace-prompt --verbose --trace-prompt-file preview.prompts.jsonl
 ```
 
-Use a fresh trace filename because tracing appends. Preview and real generation
-use the same template selection and rendering. Tracing records final requests,
-including role-bearing messages at boundaries that use message lists. Enable
-`--run-report` to save content hashes (and file paths) for overrides and built-in
-template assets, without their text; a config hash alone cannot capture file edits.
-Keep the YAML, template files, topic graph and code revision with each experiment.
-Resume warns if resolved templates differ from the checkpoint; use separate
-outputs and checkpoints for different template variants.
+Each invocation saves its recorded prompts in a separate trace file, preserving earlier traces. See [Existing Files and Name Clashes](../cli/generate.md#existing-files-and-name-clashes) for filename collision handling.
+
+Preview shows the prompts real generation would send, including message roles where applicable. Enable `--run-report` to save content hashes and file paths for overrides and built-in template assets, without their text; a config hash alone cannot capture file edits.
+
+Keep the YAML, template files, topic graph and code revision with each experiment. Resume warns if resolved templates differ from the checkpoint; use separate outputs and checkpoints for different template variants.
