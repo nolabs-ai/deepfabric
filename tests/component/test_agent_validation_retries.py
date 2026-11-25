@@ -95,6 +95,7 @@ def test_tool_acceptance_uses_runtime_registry(make_engine, missing_context):
         tool_context=None if missing_context else SimpleNamespace(executions=[])
     )
     engine = make_engine()
+    # Without a runtime registry, tool acceptance checks must not reject the conversation.
     engine._validate_conversation_tools(conversation)
     # A present registry activates validation even if configuration was changed later.
     configured = make_engine(custom_tools=[TOOL])
@@ -184,6 +185,61 @@ async def test_tool_acceptance_failure_retries_with_consistent_messages(
     assert (
         "Agent mode requires at least one tool execution" in engine.get_all_failures()[0]["error"]
     )
+    for session in spin_sessions:
+        session.cleanup.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failure", ["no_execution", "strict_overflow"])
+async def test_independent_tool_acceptance_error_reaches_retry_prompt(
+    make_engine, spin_sessions, failure
+):
+    other_tool = {**TOOL, "name": "lookup_other"}
+    engine = make_engine(
+        topic_sample_mode="independent",
+        custom_tools=[TOOL, other_tool],
+        spin_endpoint="http://spin.invalid",
+        sample_retries=1,
+        max_tools_per_query=1,
+        max_tools_strict=True,
+    )
+    if failure == "no_execution":
+        rejected_steps = [FINAL_STEP]
+        error = "Agent mode requires at least one tool execution"
+    else:
+        rejected_steps = [
+            {
+                **TOOL_STEP,
+                "tool_calls": [
+                    TOOL_STEP["tool_calls"][0],
+                    {**TOOL_STEP["tool_calls"][0], "function_name": "lookup_other"},
+                ],
+            },
+            FINAL_STEP,
+        ]
+        error = "Sample has 2 tool executions, exceeds limit of 1"
+    script(
+        engine,
+        question(engine, "First question"),
+        *rejected_steps,
+        {"content": "Rejected assistant response"},
+        question(engine, "Replacement question"),
+        TOOL_STEP,
+        FINAL_STEP,
+        {"content": "Recovered assistant response"},
+    )
+    dataset = await run(engine)
+    assert len(dataset) == 1, engine.get_all_failures()
+    assert dataset[0]["messages"][0]["content"] == "Replacement question"
+    steps = [
+        call
+        for call in engine.llm_client.generate_async.call_args_list
+        if schema_of(call).__name__ == "AgentStep"
+    ]
+    assert error not in prompt_of(steps[0])
+    retry_prompt = prompt_of(steps[len(rejected_steps)])
+    assert "Previous Attempt Failed" in retry_prompt
+    assert error in retry_prompt
+    assert len(spin_sessions) == 2
     for session in spin_sessions:
         session.cleanup.assert_awaited_once()
 
