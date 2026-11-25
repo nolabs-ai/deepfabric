@@ -171,7 +171,7 @@ class SingleTurnAgentBuilder(ConversationBuilder):
         Raises:
             ValueError: If generation fails at any step
         """
-        # Coordination affects retry ownership and output formatting, not agent prompts.
+        # Track coordinated generation for output formatting.
         self._coordinated_generation = (
             pinned_user_message is not None or self.config.topic_sample_mode == "sequential"
         )

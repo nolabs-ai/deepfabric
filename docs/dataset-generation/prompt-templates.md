@@ -128,13 +128,20 @@ Tool results: {{ tool_results }}
 Give a concise answer grounded in these results.
 ```
 
-Omitting either key preserves its existing prompt. These defaults are assembled
-in the agent builder; `default_prompt` exposes the complete default for that call,
-including any retry notice. Overrides change prompt text only: `AgentStep` and
-`AgentResponse` response schemas, tool execution, retry budgets, pinned requests,
-and dataset assembly stay the same. Template files are snapshotted and identified
-by SHA-256 and path in run reports just like other generation templates. Dry-run previews
-show both stages with representative action/result data.
+Omitting either key preserves its default prompt. Overrides change prompt text
+only; response schemas, tool execution, retry budgets, pinned requests, and
+dataset assembly stay the same. Run reports identify template files by SHA-256
+and path. Dry-run previews show both stages with representative action/result data.
+
+The default action prompt includes feedback on retries, including validation
+errors for missing tool executions or exceeding a strict tool limit. When a
+whole conversation is retried, this feedback goes to its first action prompt,
+not the user-request or final-reply prompt. An `agent_step` override must include
+`{{ default_prompt }}` to retain the default retry notice, or
+`{{ raw_retry_feedback }}` to supply its own wording. There is no separate
+retry-notice template. Feedback is sent regardless of whether prompt tracing is
+enabled; [verbose tracing](../cli/generate.md#prompt-tracing-and-dry-runs) saves retry
+prompts for inspection.
 
 ### Tool-agent fields
 
@@ -205,9 +212,9 @@ retain the following stage availability:
 | `completion` | `seed`, `seed_section`, `context_guidance`, `retry_feedback` |
 
 Accepted does not mean populated in every call. In these four stages,
-`raw_retry_feedback` receives errors only on custom-schema bulk completion retries. It also exposes errors supplied to `agent_step`, as described
-above. Unknown or unavailable stage-specific names are validation
-errors.
+`raw_retry_feedback` is populated only on custom-schema bulk completion retries.
+For agent feedback, see [Tool-call conversations](#tool-call-conversations).
+Unknown or unavailable stage-specific names are validation errors.
 
 ### Raw and content-only sample fields
 
@@ -395,8 +402,13 @@ alongside sample-template metadata.
 uv run deepfabric generate config.yaml --topics-load topics.json --dry-run --trace-prompt --verbose --trace-prompt-file preview.prompts.jsonl
 ```
 
-Each invocation saves its recorded prompts in a separate trace file, preserving earlier traces. See [Existing Files and Name Clashes](../cli/generate.md#existing-files-and-name-clashes) for filename collision handling.
+Each invocation saves its recorded prompts in a separate trace file, preserving
+earlier traces. See [Existing Files and Name Clashes](../cli/generate.md#existing-files-and-name-clashes)
+for filename collision handling.
 
-Preview shows the prompts real generation would send, including message roles where applicable. Enable `--run-report` to save content hashes and file paths for overrides and built-in template assets, without their text; a config hash alone cannot capture file edits.
-
-Keep the YAML, template files, topic graph and code revision with each experiment. Resume warns if resolved templates differ from the checkpoint; use separate outputs and checkpoints for different template variants.
+Preview shows the prompts real generation would send, including message roles
+where applicable. Enable `--run-report` to save content hashes (and file paths) 
+for overrides and built-in template assets, without their text; a config hash alone cannot capture file edits.
+Keep the YAML, template files, topic graph and code revision with each experiment.
+Resume warns if resolved templates differ from the checkpoint; use separate
+outputs and checkpoints for different template variants.
