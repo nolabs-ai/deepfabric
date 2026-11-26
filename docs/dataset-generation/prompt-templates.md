@@ -407,8 +407,10 @@ earlier traces. See [Existing Files and Name Clashes](../cli/generate.md#existin
 for filename collision handling.
 
 Preview shows the prompts real generation would send, including message roles
-where applicable. Enable `--run-report` to save content hashes (and file paths) 
-for overrides and built-in template assets, without their text; a config hash alone cannot capture file edits.
+where applicable. Enable `--run-report` to record template content hashes and
+file paths, without saving template text. A config hash alone cannot capture
+file edits.
+
 Keep the YAML, template files, topic graph and code revision with each experiment.
 Resume warns if resolved templates differ from the checkpoint; use separate
 outputs and checkpoints for different template variants.
