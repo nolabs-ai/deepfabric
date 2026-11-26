@@ -447,6 +447,7 @@ async def test_agent_retry_is_whole_sample_with_new_question_and_fresh_session(
         engine,
         {"content": "Rejected attempt user request"},
         {"thought": ""},
+        {"thought": ""},
         {"content": "Successful attempt user request"},
         STEP,
         DONE,
@@ -459,11 +460,11 @@ async def test_agent_retry_is_whole_sample_with_new_question_and_fresh_session(
     _, dataset = await run(engine, 2)
     assert len(dataset) == 2, engine.get_all_failures()
     calls = engine.llm_client.generate_async.call_args_list
-    assert len(calls) == 10 and len(sessions) == 3
-    assert calls[2].kwargs["schema"].__name__ == "UserQuestion"
-    assert history(prompt_of(calls[2])) == []
-    assert history(prompt_of(calls[6])) == ["Successful attempt user request"]
-    assert "Rejected attempt user request" not in prompt_of(calls[6])
+    assert len(calls) == 11 and len(sessions) == 3
+    assert calls[3].kwargs["schema"].__name__ == "UserQuestion"
+    assert history(prompt_of(calls[3])) == []
+    assert history(prompt_of(calls[7])) == ["Successful attempt user request"]
+    assert "Rejected attempt user request" not in prompt_of(calls[7])
     for session in sessions:
         session.cleanup.assert_awaited_once()
 

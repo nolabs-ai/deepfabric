@@ -48,7 +48,7 @@ from .constants import (
     SEQUENTIAL_PROMPT_WARNING_CHARS,
 )
 from .error_codes import classify_error
-from .exceptions import DataSetGeneratorError
+from .exceptions import DataSetGeneratorError, ToolValidationError
 from .llm import LLMClient
 from .llm.checkpoint_accounting import CheckpointAccounting, validate_accounting
 from .llm.client import make_dynamic_model
@@ -1309,6 +1309,7 @@ class DataSetGenerator:
                     # Builder handles all generation complexity
                     # Pass error feedback from previous attempt if this is a retry
                     conversation = await builder.generate(prompt, error_feedback)
+                    self._validate_conversation_tools(conversation)
                 except Exception as e:  # noqa: BLE001
                     last_error = e
                     is_validation = is_validation_error(e)
@@ -1332,39 +1333,6 @@ class DataSetGenerator:
                     return False, last_error or Exception("Sample generation failed")
 
                 else:
-                    # Validate tool execution count for agent mode (when tools configured)
-                    if self.tool_registry is not None:
-                        if (
-                            not conversation.tool_context
-                            or not conversation.tool_context.executions
-                        ):
-                            last_error = ValueError(
-                                "Agent mode requires at least one tool execution"
-                            )
-                            if attempt < self.config.sample_retries:
-                                self._emit_retry(sample_idx, attempt, max_attempts, last_error)
-                                continue
-                            return False, last_error or Exception("Sample generation failed")
-
-                        num_executions = len(conversation.tool_context.executions)
-                        if num_executions > self.config.max_tools_per_query:
-                            if self.config.max_tools_strict:
-                                # Strict mode: discard entire sample
-                                last_error = ValueError(
-                                    f"Sample has {num_executions} tool executions, "
-                                    f"exceeds limit of {self.config.max_tools_per_query}"
-                                )
-                                if attempt < self.config.sample_retries:
-                                    self._emit_retry(sample_idx, attempt, max_attempts, last_error)
-                                    continue
-                                return False, last_error or Exception("Sample generation failed")
-                            # Non-strict mode: truncate to limit and keep sample
-                            conversation.tool_context.executions = (
-                                conversation.tool_context.executions[
-                                    : self.config.max_tools_per_query
-                                ]
-                            )
-
                     # Add topic_id to conversation metadata for traceability
                     if topic_path_info and hasattr(conversation, "metadata"):
                         if conversation.metadata is None:
@@ -2450,16 +2418,16 @@ class DataSetGenerator:
         self._validate_conversation_tools(conversation)
 
     def _validate_conversation_tools(self, conversation: Conversation) -> None:
-        """Apply the existing execution-count policy to coordinated conversations."""
-        if self.config.tool_components or self.config.custom_tools:
+        """Apply the shared tool-execution acceptance policy in every agent mode."""
+        if self.tool_registry is not None:
             if not conversation.tool_context or not conversation.tool_context.executions:
-                raise ValueError(
-                    "Agent completion validation error: at least one tool execution is required"
-                )
-            if len(conversation.tool_context.executions) > self.config.max_tools_per_query:
+                raise ToolValidationError("Agent mode requires at least one tool execution")
+            num_executions = len(conversation.tool_context.executions)
+            if num_executions > self.config.max_tools_per_query:
                 if self.config.max_tools_strict:
-                    raise ValueError(
-                        "Agent completion validation error: tool execution limit exceeded"
+                    raise ToolValidationError(
+                        f"Sample has {num_executions} tool executions, "
+                        f"exceeds limit of {self.config.max_tools_per_query}"
                     )
                 conversation.tool_context.executions = conversation.tool_context.executions[
                     : self.config.max_tools_per_query

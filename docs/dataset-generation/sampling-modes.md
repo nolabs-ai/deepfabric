@@ -113,10 +113,18 @@ Tool loops may require more decision calls. Choosing `bulk` does not select a pr
 ## Budgets, retries and resume
 
 - Bulk collection uses `max_tokens × currently requested items` by default. Set
-  `generation.bulk.max_tokens_per_call` for a fixed pooled ceiling. Each completion retains
-  `max_tokens`; provider limits still apply without automatic clamping.
+  `generation.bulk.max_tokens_per_call` for a fixed collection ceiling. In bulk/seed,
+  completion calls have separate `max_tokens` ceilings; their usage is not deducted
+  from the collection allowance. Tool-agent completion can require multiple calls.
+  These are per-call output limits, not a total run budget; provider limits still apply
+  without automatic clamping.
 - Short or partially invalid collections retain accepted items and retry outstanding slots
   within `sample_retries`. Seed completions retry with the same pinned seed.
+- Tool-enabled independent, bulk/seed and sequential generation use `sample_retries`
+  for both local ReAct decision retries and whole-sample retries. These limits nest;
+  provider transport retries are separate. Local retries retain prior observations,
+  while whole-sample retries can repeat tool executions. Bulk/seed preserves its pinned
+  question; sequential regenerates the question and adds only accepted samples to history.
 - Resume restores accepted seeds and successful sibling history. Use `--resume --retry-failed`
   to reopen terminal failures; successful samples are preserved.
 - `output.batch_size` limits active topics, not items per bulk response. Calls within each topic

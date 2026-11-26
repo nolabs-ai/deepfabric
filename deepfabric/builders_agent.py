@@ -171,7 +171,7 @@ class SingleTurnAgentBuilder(ConversationBuilder):
         Raises:
             ValueError: If generation fails at any step
         """
-        # Coordination affects retry ownership and output formatting, not agent prompts.
+        # Track coordinated generation for output formatting.
         self._coordinated_generation = (
             pinned_user_message is not None or self.config.topic_sample_mode == "sequential"
         )
@@ -351,12 +351,8 @@ Example format: "Can you tell me the weather in Paris tomorrow and suggest what 
         Returns:
             AgentStep with thought, optional tool calls, and is_final flag
         """
-        # Coordinated generation has one outer slot budget; do not multiply it here.
-        max_retries = (
-            0
-            if self._coordinated_generation
-            else getattr(self.config, "sample_retries", DEFAULT_SAMPLE_RETRIES)
-        )
+        # Retry a decision in place before the caller considers restarting the sample.
+        max_retries = getattr(self.config, "sample_retries", DEFAULT_SAMPLE_RETRIES)
         last_error: Exception | None = None
         current_feedback = error_feedback
 

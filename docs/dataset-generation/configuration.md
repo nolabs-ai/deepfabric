@@ -212,6 +212,9 @@ Set `output.format: custom` alongside it to document the intent in your config â
 
 #### generation.tools
 
+Agent mode requires configured tool components or custom tools. An omitted tools
+block, `tools: {}`, or a block with only endpoint settings counts as no tools.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `spin_endpoint` | string | Spin service URL |

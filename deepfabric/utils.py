@@ -15,6 +15,7 @@ from .constants import (
     CHECKPOINT_METADATA_SUFFIX,
     CHECKPOINT_SAMPLES_SUFFIX,
 )
+from .exceptions import ToolValidationError
 
 VALIDATION_ERROR_INDICATORS = [
     "validation error",
@@ -31,6 +32,8 @@ VALIDATION_ERROR_INDICATORS = [
 
 def is_validation_error(error: Exception) -> bool:
     """Check if an error is a validation/schema error that can be retried."""
+    if isinstance(error, ToolValidationError):
+        return True
     error_str = str(error).lower()
     return any(indicator in error_str for indicator in VALIDATION_ERROR_INDICATORS)
 

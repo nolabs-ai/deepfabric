@@ -290,9 +290,7 @@ class GenerationConfig(TopicSamplingConfig):
     def validate_sample_mode(self):
         self.validate_topic_sampling(
             self.output_schema,
-            has_tools=self.tools is not None,
-            # As the generator counts tools: a block without components or custom tools adds none.
-            uses_tools=self.tools is not None and bool(self.tools.components or self.tools.custom),
+            has_tools=self.tools is not None and bool(self.tools.components or self.tools.custom),
         )
         return self
 

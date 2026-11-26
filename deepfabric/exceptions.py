@@ -19,6 +19,10 @@ class ValidationError(DeepFabricError):
     pass
 
 
+class ToolValidationError(ValidationError):
+    """Raised when a conversation violates tool-execution acceptance rules."""
+
+
 class ModelError(DeepFabricError):
     """Raised when there is an error with LLM model operations."""
 
